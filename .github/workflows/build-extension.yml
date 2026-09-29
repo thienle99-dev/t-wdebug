@@ -31,6 +31,9 @@ jobs:
       - name: Run unit tests
         run: npm test
 
+      - name: Check capture architecture
+        run: npm run check:capture-architecture
+
       - name: Build extension
         run: npm run build
 

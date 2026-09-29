@@ -8,7 +8,8 @@
     "build": "tsc -b && vite build",
     "test": "vitest run",
     "test:watch": "vitest",
-    "typecheck": "tsc -b --pretty"
+    "typecheck": "tsc -b --pretty",
+    "check:capture-architecture": "bash scripts/check-capture-architecture.sh"
   },
   "dependencies": {
     "idb": "^8.0.3",

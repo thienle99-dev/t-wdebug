@@ -38,8 +38,9 @@ button:focus-visible, input:focus-visible { outline: 2px solid #68b5ff; outline-
 .capture-state i { width: 7px; height: 7px; background: #8390a0; border-radius: 50%; }
 .capture-state.on { color: #8ce0b1; }
 .capture-state.on i { background: #4ac783; box-shadow: 0 0 0 3px #4ac78322; }
-.capture-button { min-height: 29px; padding: 4px 10px; }
-.capture-button.active { color: #ffc0b6; border-color: #694139; background: #34231f; }
+.capture-hint { display: flex; flex-direction: column; gap: 3px; padding: 7px 10px; color: #bdc8d6; background: #1b222c; border-bottom: 1px solid #303a47; line-height: 1.4; }
+.capture-hint strong { color: #e2c58d; font-size: 10px; }
+.capture-hint span { color: #b5c0ce; font-size: 10px; }
 .toolbar { min-height: 42px; display: flex; align-items: center; gap: 7px; padding: 6px 9px; border-bottom: 1px solid #262e39; }
 .search-field { min-width: 100px; flex: 1; height: 29px; display: flex; align-items: center; gap: 6px; padding: 0 7px; color: #8290a1; background: #10141a; border: 1px solid #303744; border-radius: 5px; }
 .search-field > span { font-size: 17px; line-height: 1; }

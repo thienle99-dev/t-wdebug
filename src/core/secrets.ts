@@ -38,7 +38,8 @@ export function redactRecord(record: RequestRecord): RequestRecord {
     const text = body.text ? redactText(body.text) : undefined;
     const safeJson = body.json !== undefined ? redactObject(body.json) : undefined;
     const safeText = body.json !== undefined ? JSON.stringify(safeJson, null, 2) : text;
-    return { ...body, ...(safeText ? { text: safeText } : {}), ...(safeJson !== undefined ? { json: safeJson } : {}) } as T;
+    const safeFormData = 'formData' in body && body.formData !== undefined ? redactObject(body.formData) : undefined;
+    return { ...body, ...(safeText ? { text: safeText } : {}), ...(safeJson !== undefined ? { json: safeJson } : {}), ...(safeFormData !== undefined ? { formData: safeFormData } : {}) } as T;
   };
   const copy: RequestRecord = structuredClone(record);
   copy.request.url = redactUrl(copy.request.url);
