@@ -5,7 +5,7 @@ Debug Lens (formerly API Lens) is a local-first Chrome extension for investigati
 ## What works today
 
 - **Network:** opt-in MAIN-world `fetch`/XHR capture without DevTools, plus richer `chrome.devtools.network` capture while DevTools is open. Records merge into one IndexedDB history.
-- **UI Inspector:** pick an element, inspect a bounded DOM snapshot, computed styles, box model, CSS variables, accessibility heuristics, visibility/coverage/clipping checks, and scoped event/mutation history.
+- **UI Inspector:** pick an element, inspect a bounded DOM snapshot, computed styles, box model, CSS variables, accessibility heuristics, evidence-backed visibility/clickability/coverage/clipping checks, stacking contexts, scroll ancestors, flex/grid and sticky/fixed diagnostics, plus scoped event/mutation history and snapshot diffs.
 - **Console:** records page `console.error`, `console.warn`, uncaught errors, and unhandled rejections while page capture is active.
 - **Performance:** captures supported resource, long-task, layout-shift, and paint entries; local insights flag slow/repeated/large requests and nearby errors.
 - **Flows:** best-effort timelines group selected-element interactions with nearby requests, console records, and DOM mutations. These are correlations, not proof of causation.
@@ -41,7 +41,7 @@ The DevTools panel captures through `chrome.devtools.network` and only while Dev
 
 ## Local demo page
 
-Run `npm run demo`, open `http://127.0.0.1:5173/demo.html`, then grant site access and start capture. The page includes local 200/401/422/500 and delayed API responses, fetch and XHR requests, a fake bearer value, console errors, DOM mutations, hidden/clipped/covered targets, and a long task. The API endpoint is supplied by a Vite development middleware and is not included in the production extension.
+Run `npm run demo`, open `http://127.0.0.1:5173/demo.html`, then grant site access and start capture. The page includes local 200/401/422/500 and delayed API responses, fetch and XHR requests, a fake bearer value, console errors, DOM mutations, hidden/clipped/covered targets, flex and grid overflow, sticky without an inset, nested stacking contexts, and a long task. The API endpoint is supplied by a Vite development middleware and is not included in the production extension.
 
 ## Architecture
 
@@ -89,7 +89,7 @@ There is no `debugger` permission and standard operation never calls `chrome.deb
 - Requests made internally by a site's service worker and inaccessible/protected Chrome pages are not reliably visible. Cross-origin iframe capture is not enabled by default; closed shadow roots cannot be inspected.
 - Streaming/SSE and binary response bodies are omitted. Bodies are limited to 1 MB. Response types such as XHR blob/arraybuffer may not expose readable text.
 - The picker blocks the click used to select an element to avoid triggering the application action. Click again after selection to reproduce it. Mutation/event tracking is scoped to the selected element and capped.
-- Computed styles are available, but exact stylesheet source/overridden rule tracing, full WCAG auditing, screenshots, framework component trees, exact retry, and responsive device emulation are not implemented.
+- Computed styles and in-scope CSS variables are available, but exact stylesheet source/overridden rule tracing, full WCAG auditing, screenshots, framework component trees, exact retry, and responsive device emulation are not implemented. Coverage is estimated from nine visible points; clipping and layout messages are geometric/rule-based diagnostics, not proof of root cause. The DOM serializer bounds traversal by depth, node count, attributes, and output length before it emits a snapshot.
 - Performance and flow insights are lightweight browser signals and timestamp correlations, not a replacement for Chrome Performance or proof of causality.
 - AI provider calls, saved debug sessions, snapshot diff, and broad session-wide value search are not implemented in this MVP.
 
@@ -113,8 +113,8 @@ The package workflow creates `api-lens-v<version>-YYYYMMDD-HHmmss.zip` using a U
 1. Build and load `dist/` in Chrome.
 2. Run the local demo, open the toolbar popup, and grant access to `127.0.0.1`.
 3. Trigger fetch/XHR status buttons; verify request, response body, timing, and dummy bearer capture.
-4. Pick the covered/clipped/hidden button; verify the DOM snapshot, computed styles, and diagnostics.
-5. Select the mutation target, click **Stop tracking** only after interacting; verify events and changes are recorded.
+4. Pick covered, clipped, hidden, flex/grid overflow, sticky, and stacking-context targets; verify each result includes the measured evidence.
+5. Select the mutation target, interact with it, and review Events and Changes; choose a later snapshot to compare computed styles and bounds.
 6. Trigger console error and long task; verify Console/Performance and related-flow views.
 7. Open DevTools and confirm the Network panel enriches history without a Chrome debugging banner; close DevTools and verify history remains.
 8. Verify default masking, safe cURL/debug copy, Postman export, and manual redacted AI prompt.

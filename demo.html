@@ -16,6 +16,15 @@
     .wide { width:720px; max-width:none } .cover { position:relative; display:inline-block; margin-top:12px }
     .overlay { position:absolute; inset:0; background:#ef444455; z-index:4; display:grid; place-items:center; pointer-events:auto }
     .hidden { display:none } .error { color:#fca5a5 } #mutation { padding:8px; border-radius:5px }
+    .flex-case { display:flex; width:100%; gap:8px; overflow:hidden; border:1px dashed #8090a4; padding:8px }
+    .flex-case > div { flex:1; min-width:auto; overflow-wrap:normal; white-space:nowrap }
+    .grid-case { display:grid; grid-template-columns:1fr 1fr; gap:8px; width:100%; overflow:hidden }
+    .grid-case > div { min-width:420px; padding:8px; background:#1b2a3e }
+    .sticky-case { height:90px; overflow:auto; border:1px dashed #8090a4 }
+    .sticky-case header { position:sticky; background:#193458; padding:8px }
+    .stack-parent { position:relative; z-index:1; transform:translateZ(0); padding:8px; margin-top:8px; background:#263247 }
+    .stack-child { position:relative; z-index:9999 }
+    .stack-sibling { position:absolute; z-index:2; right:8px; top:8px; background:#9f1239 }
     pre { min-height:48px; white-space:pre-wrap; overflow-wrap:anywhere; color:#b9c8da }
   </style>
 </head>
@@ -29,7 +38,7 @@
       <button id="slow">Slow request</button><button id="xhr">XHR request</button>
     </div><pre id="result">Responses will appear here.</pre></section>
     <section><h2>Events & mutations</h2><div class="stack"><button id="mutate">Toggle loading state</button><button id="console-error">Console error</button><button id="long-task">Long task</button></div><p id="mutation">Ready to save.</p></section>
-    <section><h2>Layout cases</h2><p>Pick each target to inspect visibility, clipping, coverage, and overflow.</p><button id="covered">Covered button</button><div class="cover"><button>Underlying action</button><div class="overlay">Overlay</div></div><p><button class="hidden">display:none target</button><span class="error">Hidden button is above.</span></p><div class="clip"><div class="wide">720px content inside a clipped 100% region</div></div></section>
+    <section><h2>Layout cases</h2><p>Pick each target to inspect visibility, clipping, coverage, stacking, and layout constraints.</p><button id="covered">Covered button</button><div class="cover"><button>Underlying action</button><div class="overlay">Overlay</div></div><p><button class="hidden">display:none target</button><span class="error">Hidden button is above.</span></p><div class="clip"><div class="wide">720px content inside a clipped 100% region</div></div><h3>Flex min-width</h3><div class="flex-case"><div>Long unbreakable content demonstrating a flex item with min-width:auto</div><button>Action</button></div><h3>Grid overflow</h3><div class="grid-case"><div>Fixed minimum track content</div><div>Second track</div></div><h3>Sticky without inset</h3><div class="sticky-case"><header>Pick this sticky header</header><p>Scroll content</p><p>Scroll content</p><p>Scroll content</p></div><h3>Nested stacking context</h3><div class="stack-parent"><button class="stack-child">z-index 9999 in context 1</button><span class="stack-sibling">Sibling context 2</span></div></section>
     <section><h2>Authentication marker</h2><p>Use an intentionally fake token to test masking. It is never a valid credential.</p><button id="auth">Send request with fake bearer</button><input aria-label="Email" placeholder="Try the accessibility inspector" required><button disabled>Disabled button</button></section>
   </div>
   <script>

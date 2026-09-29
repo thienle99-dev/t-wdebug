@@ -24,13 +24,21 @@ export interface PageHookCapturePayload {
 export interface StackFrame { functionName?: string; url?: string; line?: number; column?: number }
 export interface UIElementRecord {
   kind: 'ui-snapshot'; id: string; tabId: number; frameId?: number; timestamp: number;
-  selector: string; simpleSelector: string; domPath: string; tagName: string; idAttribute?: string; classList: string[];
+  selector: string; simpleSelector: string; domPath: string; tagName: string; nodeName?: string; idAttribute?: string; classList: string[];
   text?: string; html?: string; attributes: Record<string, string>;
   bounds: { x: number; y: number; width: number; height: number; top: number; right: number; bottom: number; left: number };
-  styles: { computed: Record<string, string>; box: { margin: string; border: string; padding: string; content: string }; variables: Record<string, string> };
+  styles: { computed: Record<string, string>; box: { margin: string; border: string; padding: string; content: string; sides?: { margin: Record<'top' | 'right' | 'bottom' | 'left', string>; border: Record<'top' | 'right' | 'bottom' | 'left', string>; padding: Record<'top' | 'right' | 'bottom' | 'left', string> } }; variables: Record<string, string> };
   ancestry: Array<{ selector: string; tagName: string; id?: string; classes: string[] }>;
   accessibility: { role?: string; name?: string; label?: string; labelledBy?: string; describedBy?: string; tabindex?: string; disabled: boolean; checks: string[] };
-  visibility: { display: string; visibility: string; opacity: number; inViewport: boolean; clipped: boolean; covered: boolean; coveringSelector?: string };
+  visibility: { display: string; visibility: string; opacity: number; inViewport: boolean; clipped: boolean; covered: boolean; coveringSelector?: string; hiddenBy?: string[]; clippingSelector?: string; coverage?: { samplesCovered: number; samplesTested: number; certainty: 'likely' | 'possible' } };
+  viewport?: { width: number; height: number; scrollX: number; scrollY: number };
+  layout?: {
+    position: string; display?: string; containingBlock?: string; parentDisplay?: string; overflowX: string; overflowY: string;
+    flex?: Record<string, string>; grid?: Record<string, string>;
+    scrollAncestors: Array<{ selector: string; overflowX: string; overflowY: string; scrollWidth: number; clientWidth: number; scrollHeight: number; clientHeight: number; scrollTop: number; scrollLeft: number }>;
+    stackingContexts: Array<{ selector: string; zIndex: string; reasons: string[] }>;
+  };
+  interaction?: { state: 'available' | 'blocked' | 'possible'; reasons: string[]; pointerEvents: string; disabled: boolean; keyboardReachable: boolean };
   diagnostics: Array<{ severity: 'info' | 'warning' | 'error'; title: string; evidence: string }>;
   page: { url: string; viewportWidth: number; viewportHeight: number };
 }
