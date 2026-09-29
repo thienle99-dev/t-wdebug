@@ -2,7 +2,7 @@ name: Build Chrome extension
 
 on:
   push:
-    branches: ['**']
+    branches-ignore: [main]
     tags: ['v*']
   pull_request:
 
@@ -74,6 +74,9 @@ jobs:
     permissions:
       contents: write
     steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
       - name: Download verified extension ZIP
         uses: actions/download-artifact@v4
         with:

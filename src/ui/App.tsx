@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type MouseEvent, type PointerEvent, type ReactNode } from 'react';
+import { Component, useEffect, useMemo, useRef, useState, type CSSProperties, type ErrorInfo, type KeyboardEvent, type MouseEvent, type PointerEvent, type ReactNode } from 'react';
 import { clearDebugRecords, clearRequests, getDebugRecords } from '../storage/indexed-db';
 import { getPreferences, savePreferences } from '../storage/preferences';
 import { useRequestStore } from '../shared/store';
@@ -27,7 +27,7 @@ function bodyForDisplay(body?: BodyContent): string | undefined {
 }
 
 export function App({ devtoolsTabId }: { devtoolsTabId?: number }) {
-  const { requests, selectedId, loading, refresh, select, remove, togglePin } = useRequestStore();
+  const { requests, selectedId, loading, storageError, refresh, select, remove, togglePin } = useRequestStore();
   const [query, setQuery] = useState(''); const [tab, setTab] = useState<DetailTab>('overview');
   const [mode, setMode] = useState<ProductMode>(devtoolsTabId === undefined ? 'recent' : 'network');
   const [debugRecords, setDebugRecords] = useState<DebugRecord[]>([]);
@@ -41,6 +41,8 @@ export function App({ devtoolsTabId }: { devtoolsTabId?: number }) {
   const [statusFilter, setStatusFilter] = useState('all');
   const [hasAuthOnly, setHasAuthOnly] = useState(false);
   const workspaceRef = useRef<HTMLElement>(null);
+  const mainContentRef = useRef<HTMLElement>(null);
+  const popupLayoutDebug = devtoolsTabId === undefined && import.meta.env.DEV && new URLSearchParams(window.location.search).get('debugLayout') === '1';
   useEffect(() => { void refresh(); void getPreferences().then((p) => { setPrefs(p); setIncludeSecrets(p.includeSecretsInCopy); setAppearance(p.theme); setSidebarWidth(p.sidebarWidth); }); const timer = window.setInterval(() => void refresh(), 1200); return () => window.clearInterval(timer); }, [refresh]);
   useEffect(() => {
     const syncPreferences = (changes: Record<string, chrome.storage.StorageChange>, area: string) => {
@@ -56,6 +58,24 @@ export function App({ devtoolsTabId }: { devtoolsTabId?: number }) {
   }, [prefs]);
   const resolvedTheme = appearance === 'system' ? (window.matchMedia?.('(prefers-color-scheme: dark)').matches ? 'dark' : 'light') : appearance;
   useEffect(() => { document.documentElement.dataset.theme = resolvedTheme; document.documentElement.style.colorScheme = resolvedTheme; }, [resolvedTheme]);
+  useEffect(() => {
+    if (!popupLayoutDebug) return;
+    document.documentElement.dataset.debugLayout = 'true';
+    const frame = window.requestAnimationFrame(() => {
+      const dimensions = (element: Element | null) => {
+        const rect = element?.getBoundingClientRect();
+        return rect ? { width: Math.round(rect.width), height: Math.round(rect.height), top: Math.round(rect.top) } : null;
+      };
+      console.info('[Debug Lens popup layout]', {
+        window: { width: window.innerWidth, height: window.innerHeight },
+        document: { width: document.documentElement.clientWidth, height: document.documentElement.clientHeight },
+        root: dimensions(document.getElementById('root')),
+        popupShell: dimensions(document.querySelector('.popup-shell')),
+        mainContent: dimensions(mainContentRef.current),
+      });
+    });
+    return () => { window.cancelAnimationFrame(frame); delete document.documentElement.dataset.debugLayout; };
+  }, [popupLayoutDebug]);
   useEffect(() => {
     if (appearance !== 'system') return;
     const media = window.matchMedia('(prefers-color-scheme: dark)');
@@ -196,10 +216,13 @@ export function App({ devtoolsTabId }: { devtoolsTabId?: number }) {
     else if (kind === 'bug') void copy(toMarkdownBugReport(record), 'Safe bug report');
   }
   const captureLabel = pageHookCapture ? 'Capturing this tab' : capture ? 'DevTools capture' : 'Live capture unavailable';
-  return <main className={devtoolsTabId === undefined ? 'app popup' : 'app panel'}>
-    <header className="topbar"><div className="brand"><span className="brand-mark" aria-hidden="true">◇</span><strong>Debug Lens</strong><span className="count" title={`${requests.length} captured requests`}>{requests.length}</span></div><div className="top-actions"><span className={`capture-state ${capture ? 'on' : ''}`} role="status"><i aria-hidden="true" />{captureLabel}</span><label className="theme-control"><span className="visually-hidden">Appearance</span><select aria-label="Appearance" title={`Appearance: ${appearance}`} value={appearance} onChange={(event) => void changeAppearance(event.target.value as AppearanceTheme)}><option value="system">System theme</option><option value="light">Light theme</option><option value="dark">Dark theme</option></select></label></div></header>
+  return <main className={devtoolsTabId === undefined ? 'app popup popup-shell' : 'app panel'}>
+    <header className={devtoolsTabId === undefined ? 'topbar popup-header' : 'topbar'}><div className="brand"><span className="brand-mark" aria-hidden="true">◇</span><strong className="brand-title">Debug Lens</strong><span className="count request-count" title={`${requests.length} captured requests`}>{requests.length}</span></div>{devtoolsTabId === undefined && <span className="header-spacer" />}<div className="top-actions"><span className={`capture-state ${devtoolsTabId === undefined ? 'capture-status' : ''} ${capture ? 'on' : ''}`} role="status"><i className={devtoolsTabId === undefined ? 'capture-dot' : undefined} aria-hidden="true" /><span className={devtoolsTabId === undefined ? 'capture-status-label' : undefined}>{captureLabel}</span></span><label className="theme-control"><span className="visually-hidden">Appearance</span><select className={devtoolsTabId === undefined ? 'theme-select' : undefined} aria-label="Appearance" title={`Appearance: ${appearance}`} value={appearance} onChange={(event) => void changeAppearance(event.target.value as AppearanceTheme)}><option value="system">System theme</option><option value="light">Light theme</option><option value="dark">Dark theme</option></select></label></div></header>
     {devtoolsTabId === undefined && <aside className="capture-hint" role="status"><span>{pageHookCapture ? 'Page hook is capturing fetch/XHR on this tab.' : capture ? 'DevTools is capturing. Enable the page hook to capture without DevTools.' : 'Capture fetch/XHR on this tab without opening DevTools. Saved history remains available.'}</span><button className={pageHookCapture ? '' : 'primary'} onClick={() => void togglePageHook()} disabled={!activeTabUrl}>{pageHookCapture ? 'Stop site capture' : 'Capture this site'}</button></aside>}
     <nav className="product-nav" aria-label="Debug areas" role="tablist">{(devtoolsTabId === undefined ? popupModes : devtoolsModes).map(([key, label]) => <button key={key} role="tab" aria-selected={mode === key} className={mode === key ? 'selected' : ''} onClick={() => setMode(key)}>{label}{key === 'console' && debugRecords.some((item) => item.kind === 'console' && item.level === 'error') ? <span className="nav-count">{debugRecords.filter((item) => item.kind === 'console' && item.level === 'error').length}</span> : null}</button>)}</nav>
+    <section className="main-content" ref={mainContentRef} aria-live="polite">
+    <MainContentBoundary>
+    {loading && !requests.length ? <div className="main-loading" role="status">Loading captured requests…</div> : storageError && !requests.length ? <div className="storage-failure" role="alert"><strong>Unable to load local request history.</strong><span>The local database could not be read. Your existing data has not been cleared.</span><button className="primary" onClick={() => void refresh()}>Retry</button></div> : <>
     {mode !== 'network' && <DebugModes mode={mode} records={debugRecords} requests={tabRequests} insights={insights} onPick={() => void startElementPicker()} onStop={() => void stopElementTracking()} onCopy={(value, label) => { if (value) void copy(value, label); else setNotice(label); }} />}
     {mode === 'network' && <>
     <section className="toolbar"><label className="search-field"><span aria-hidden="true">⌕</span><input aria-label="Search requests" placeholder="Search URL, method, status…" value={query} onChange={(event) => setQuery(event.target.value)} />{query && <button className="clear-search" aria-label="Clear search" onClick={() => setQuery('')}>×</button>}</label><select aria-label="Filter by status" value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}><option value="all">All status</option><option value="2xx">2xx</option><option value="3xx">3xx</option><option value="4xx">4xx</option><option value="5xx">5xx</option></select><select aria-label="Filter by domain" value={domainFilter} onChange={(event) => setDomainFilter(event.target.value)}><option value="">All domains</option>{domains.map((domain) => <option key={domain} value={domain}>{domain}</option>)}</select><button className={`filter-chip ${hasAuthOnly ? 'active' : ''}`} aria-pressed={hasAuthOnly} onClick={() => setHasAuthOnly(!hasAuthOnly)}>Has auth</button><details className="menu sensitive-menu"><summary>{includeSecrets ? 'Sensitive: reveal ▾' : 'Sensitive: mask ▾'}</summary><div className="menu-popover menu-align-right" role="menu"><button role="menuitemradio" aria-checked={!includeSecrets} onClick={(event) => { closeMenu(event); void changeSecrets(false); }}>Mask secrets</button><button role="menuitemradio" aria-checked={includeSecrets} onClick={(event) => { closeMenu(event); void changeSecrets(true); }}>Reveal in copies</button></div></details><details className="menu clear-menu"><summary className="quiet">Clear ▾</summary><div className="menu-popover menu-align-right"><button className="danger-action" onClick={(event) => { closeMenu(event); void clearHistory(); }}>Clear all history</button></div></details></section>
@@ -210,8 +233,25 @@ export function App({ devtoolsTabId }: { devtoolsTabId?: number }) {
         <div className="action-bar"><button className="primary" onClick={() => copyAction('full')}>Copy debug</button><button className="secondary-action" onClick={() => copyAction('curl')}>Copy cURL</button><button className="ai-action" onClick={() => copyAction('ai')}>Ask AI</button><span className="action-spacer" /><details className="menu action-menu"><summary>Copy ▾</summary><div className="menu-popover menu-align-right"><button onClick={(event) => { closeMenu(event); copyAction('request'); }}>Request</button><button onClick={(event) => { closeMenu(event); copyAction('response'); }}>Response</button><button onClick={(event) => { closeMenu(event); copyAction('safe-curl'); }}>Safe cURL</button><button onClick={(event) => { closeMenu(event); copyAction('fetch'); }}>JavaScript fetch</button><button onClick={(event) => { closeMenu(event); copyAction('axios'); }}>Axios</button><button onClick={(event) => { closeMenu(event); copyAction('raw'); }}>Raw HTTP</button><button onClick={(event) => { closeMenu(event); copyAction('bundle'); }}>Safe debug bundle</button></div></details><details className="menu action-menu"><summary>Export ▾</summary><div className="menu-popover menu-align-right"><button onClick={(event) => { closeMenu(event); copyAction('postman'); }}>Postman collection</button><button onClick={(event) => { closeMenu(event); copyAction('bug'); }}>Markdown bug report</button></div></details></div>
       </> : <div className="empty detail-empty">Select a request to inspect its details.</div>}</section>
     </section></>}
+    </>}
+    </MainContentBoundary>
+    </section>
     <footer><span>Local history · max {prefs?.maxRequests ?? 500} requests</span><span>{notice || 'No traffic is sent automatically'}</span></footer>
   </main>;
+}
+
+interface MainContentBoundaryState { failed: boolean }
+class MainContentBoundary extends Component<{ children: ReactNode }, MainContentBoundaryState> {
+  state: MainContentBoundaryState = { failed: false };
+  static getDerivedStateFromError(): MainContentBoundaryState { return { failed: true }; }
+  componentDidCatch(error: Error, info: ErrorInfo) {
+    // Do not log captured records or error messages that may contain user data.
+    console.error('[Debug Lens] Main content rendering failed.', { name: error.name, componentStack: info.componentStack?.slice(0, 1000) });
+  }
+  render() {
+    if (this.state.failed) return <div className="layout-error" role="alert"><strong>Something went wrong rendering the main content.</strong><span>The header is still available. Retry the view to render it again.</span><button onClick={() => this.setState({ failed: false })}>Retry</button></div>;
+    return this.props.children;
+  }
 }
 
 function RequestRow({ record, selected, onClick }: { record: RequestRecord; selected: boolean; onClick: () => void }) {

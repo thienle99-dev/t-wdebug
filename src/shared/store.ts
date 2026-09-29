@@ -2,9 +2,9 @@ import { create } from 'zustand';
 import { deleteRequest, getRequests, updateRequest } from '../storage/indexed-db';
 import type { RequestRecord } from './types';
 
-interface RequestState { requests: RequestRecord[]; selectedId?: string; loading: boolean; refresh: () => Promise<void>; select: (id?: string) => void; remove: (id: string) => Promise<void>; togglePin: (id: string) => Promise<void> }
+interface RequestState { requests: RequestRecord[]; selectedId?: string; loading: boolean; storageError: boolean; refresh: () => Promise<void>; select: (id?: string) => void; remove: (id: string) => Promise<void>; togglePin: (id: string) => Promise<void> }
 export const useRequestStore = create<RequestState>((set, get) => ({
-  requests: [], loading: true,
+  requests: [], loading: true, storageError: false,
   refresh: async () => {
     try {
       const requests = await getRequests();
@@ -13,8 +13,8 @@ export const useRequestStore = create<RequestState>((set, get) => ({
       const stableRequests = unchanged ? current.requests : requests;
       const selectedId = current.selectedId;
       const nextId = selectedId && stableRequests.some((item) => item.id === selectedId) ? selectedId : (stableRequests.find((item) => item.flags.failed)?.id ?? stableRequests[0]?.id);
-      if (!unchanged || current.loading || nextId !== current.selectedId) set({ requests: stableRequests, selectedId: nextId, loading: false });
-    } catch { set({ loading: false }); }
+      if (!unchanged || current.loading || current.storageError || nextId !== current.selectedId) set({ requests: stableRequests, selectedId: nextId, loading: false, storageError: false });
+    } catch { set({ loading: false, storageError: true }); }
   },
   select: (id) => set({ selectedId: id }),
   remove: async (id) => { await deleteRequest(id); await get().refresh(); },
