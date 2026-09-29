@@ -26,6 +26,7 @@ const BINARY_MIME = /^(?:image\/|audio\/|video\/|font\/|application\/(?:octet-st
 const STATIC_MIME = /^(?:image\/|audio\/|video\/|font\/|text\/css|application\/(?:javascript|x-javascript))/i;
 const STATIC_RESOURCE = /^(?:image|media|font|stylesheet|script)$/i;
 const API_PATH = /(?:^|\/)(?:api|graphql|rest)(?:\/|$)/i;
+const HAR_IMPORT_CONCURRENCY = 4;
 
 export function shouldCaptureHarEntry(entry: HarEntry, captureStaticAssets = false): boolean {
   const request = entry.request;
@@ -149,12 +150,7 @@ export class DevToolsNetworkCaptureAdapter implements CaptureAdapter {
     chrome.devtools.network.onNavigated.addListener(this.onNavigated);
     await this.setHeartbeat(true);
     this.heartbeatTimer = window.setInterval(() => { void this.setHeartbeat(true); }, 5_000);
-    try {
-      const log = await this.readHar();
-      await Promise.all((log?.entries ?? []).map((entry) => this.capture(entry as unknown as HarEntry)));
-    } catch {
-      // Existing HAR import can fail while live request capture continues.
-    }
+    void this.importExistingHar();
   }
 
   async stop(): Promise<void> {
@@ -193,6 +189,18 @@ export class DevToolsNetworkCaptureAdapter implements CaptureAdapter {
       try { chrome.devtools.network.getHAR((log) => resolve(log)); }
       catch { resolve(undefined); }
     });
+  }
+
+  private async importExistingHar(): Promise<void> {
+    try {
+      const log = await this.readHar();
+      const entries = log?.entries ?? [];
+      for (let offset = 0; offset < entries.length; offset += HAR_IMPORT_CONCURRENCY) {
+        await Promise.all(entries.slice(offset, offset + HAR_IMPORT_CONCURRENCY).map((entry) => this.capture(entry as unknown as HarEntry)));
+      }
+    } catch {
+      // Existing HAR import can fail while live request capture continues.
+    }
   }
 
   private readPageInfo(): Promise<PageInfo> {

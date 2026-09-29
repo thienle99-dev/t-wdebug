@@ -3,20 +3,23 @@ import type { DBSchema, IDBPDatabase } from 'idb';
 import type { DebugRecord, RequestRecord, UIComponentSnapshot } from '../shared/types';
 
 interface ApiLensDB extends DBSchema {
-  requests: { key: string; value: RequestRecord; indexes: { 'by-timestamp': number } };
+  requests: { key: string; value: RequestRecord; indexes: { 'by-timestamp': number; 'by-tab': number } };
   debugRecords: { key: string; value: DebugRecord; indexes: { 'by-timestamp': number; 'by-kind': string } };
   componentSnapshots: { key: string; value: UIComponentSnapshot; indexes: { 'by-timestamp': number; 'by-tab': number } };
   componentImages: { key: string; value: { id: string; dataUrl: string } };
 }
 let database: Promise<IDBPDatabase<ApiLensDB>> | undefined;
-function db() { return database ??= openDB<ApiLensDB>('api-lens', 3, { upgrade(value, oldVersion) {
+function db() { return database ??= openDB<ApiLensDB>('api-lens', 4, { upgrade(value, oldVersion, _newVersion, transaction) {
   if (oldVersion < 1) { const store = value.createObjectStore('requests', { keyPath: 'id' }); store.createIndex('by-timestamp', 'timestamp'); }
   if (oldVersion < 2) { const store = value.createObjectStore('debugRecords', { keyPath: 'id' }); store.createIndex('by-timestamp', 'timestamp'); store.createIndex('by-kind', 'kind'); }
   if (oldVersion < 3) { const store = value.createObjectStore('componentSnapshots', { keyPath: 'id' }); store.createIndex('by-timestamp', 'timestamp'); store.createIndex('by-tab', 'tabId'); value.createObjectStore('componentImages', { keyPath: 'id' }); }
+  if (oldVersion < 4) transaction!.objectStore('requests').createIndex('by-tab', 'tabId');
 } }); }
 export async function saveRequest(record: RequestRecord, maxRequests = 500): Promise<void> {
   const value = await db(); const tx = value.transaction('requests', 'readwrite');
-  const existingRecords = await tx.store.getAll();
+  const existingRecords = record.tabId === undefined
+    ? await tx.store.getAll()
+    : await tx.store.index('by-tab').getAll(record.tabId);
   const matching = existingRecords.find((item) => isSameNetworkRequest(item, record));
   let normalized = record;
   if (matching) {
@@ -37,9 +40,11 @@ export async function saveRequest(record: RequestRecord, maxRequests = 500): Pro
     if (matching.id !== normalized.id) await tx.store.delete(matching.id);
   }
   await tx.store.put(normalized);
-  const records = (await tx.store.getAll()).sort((a, b) => b.timestamp - a.timestamp);
-  const overflow = records.slice(Math.max(0, maxRequests));
-  for (const old of overflow.filter((item) => !item.flags.pinned)) await tx.store.delete(old.id);
+  const count = await tx.store.count();
+  if (count > maxRequests) {
+    const overflow = await tx.store.index('by-timestamp').getAll(undefined, count - Math.max(0, maxRequests));
+    for (const old of overflow) if (!old.flags.pinned) await tx.store.delete(old.id);
+  }
   await tx.done;
 }
 
