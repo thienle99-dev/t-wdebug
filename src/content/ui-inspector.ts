@@ -11,20 +11,40 @@ if (!window.__DEBUG_LENS_UI_INSPECTOR__) {
   Object.assign(tag.style, { position: 'absolute', left: '-2px', top: '-24px', padding: '3px 6px', color: '#fff', background: '#2563eb', borderRadius: '3px', font: '11px/1.3 ui-monospace,monospace', whiteSpace: 'nowrap', maxWidth: 'min(420px,90vw)', overflow: 'hidden', textOverflow: 'ellipsis' });
   overlay.append(tag);
   let selected: Element | undefined;
+  let inspectorStatus: 'idle' | 'picking' | 'selected' = 'idle';
   let observer: MutationObserver | undefined;
   let mutationCount = 0;
   let scheduled = false;
+  let waitingForDocument = false;
   let latestPointer: { x: number; y: number } | undefined;
 
-  chrome.runtime.onMessage.addListener((message: { type?: string; enabled?: boolean }) => {
-    if (message?.type !== 'debug:ui:picker') return;
-    if (message.enabled) startPicking(); else stopInspection();
+  chrome.runtime.onMessage.addListener((rawMessage: unknown, sender, sendResponse) => {
+    if (sender.id !== chrome.runtime.id || !rawMessage || typeof rawMessage !== 'object' || !('type' in rawMessage)) return;
+    const type = rawMessage.type;
+    if (type === 'GET_INSPECTOR_STATUS') {
+      sendResponse({ ok: true, status: inspectorStatus });
+      return;
+    }
+    if (type === 'START_UI_INSPECTOR') {
+      try { startPicking(); sendResponse({ ok: true, status: inspectorStatus }); }
+      catch { inspectorStatus = 'idle'; sendResponse({ ok: false, reason: 'inspector-start-failed' }); }
+      return;
+    }
+    if (type === 'STOP_UI_INSPECTOR') {
+      stopInspection(); sendResponse({ ok: true, status: inspectorStatus });
+      return;
+    }
+    if (type === 'CAPTURE_SELECTED_ELEMENT') {
+      if (!selected?.isConnected) { sendResponse({ ok: false, reason: 'no-selected-element' }); return; }
+      sendRecord(snapshot(selected)); sendResponse({ ok: true, status: inspectorStatus });
+    }
   });
 
   function startPicking() {
     stopInspection();
-    if (!overlay.isConnected) (document.documentElement ?? document).append(overlay);
     selected = undefined;
+    inspectorStatus = 'picking';
+    mountOverlayWhenReady();
     document.addEventListener('pointermove', onPointerMove, true);
     document.addEventListener('click', onPickClick, true);
     document.addEventListener('keydown', onPickerKey, true);
@@ -35,12 +55,24 @@ if (!window.__DEBUG_LENS_UI_INSPECTOR__) {
     document.removeEventListener('click', onPickClick, true);
     document.removeEventListener('keydown', onPickerKey, true);
     if (!selected) overlay.style.display = 'none';
+    if (!selected) inspectorStatus = 'idle';
   }
   function stopInspection() {
     stopPicking(); observer?.disconnect(); observer = undefined; selected = undefined;
     for (const type of trackedEvents) document.removeEventListener(type, onRelatedEvent, true);
     window.removeEventListener('scroll', onViewportChange, true); window.removeEventListener('resize', onViewportChange);
     overlay.style.display = 'none';
+    inspectorStatus = 'idle';
+    if (waitingForDocument) document.removeEventListener('DOMContentLoaded', mountOverlayWhenReady);
+    waitingForDocument = false;
+  }
+  function mountOverlayWhenReady() {
+    if (!document.documentElement) {
+      if (!waitingForDocument) { waitingForDocument = true; document.addEventListener('DOMContentLoaded', mountOverlayWhenReady, { once: true }); }
+      return;
+    }
+    waitingForDocument = false;
+    if (!overlay.isConnected) document.documentElement.append(overlay);
   }
   function onPickerKey(event: KeyboardEvent) { if (event.key === 'Escape') { stopPicking(); event.stopImmediatePropagation(); } }
   function onPointerMove(event: PointerEvent) {
@@ -54,6 +86,7 @@ if (!window.__DEBUG_LENS_UI_INSPECTOR__) {
     if (!element || overlay.contains(element) || element.closest('[data-debug-lens-internal]')) return;
     event.preventDefault(); event.stopPropagation(); event.stopImmediatePropagation();
     selected = element; stopPicking();
+    inspectorStatus = 'selected';
     const record = snapshot(element);
     sendRecord(record);
     beginObservation(element);
@@ -321,5 +354,5 @@ if (!window.__DEBUG_LENS_UI_INSPECTOR__) {
   function implicitRole(element: Element): string | undefined { const tagName = element.tagName.toLowerCase(); if (tagName === 'button') return 'button'; if (tagName === 'a' && element.hasAttribute('href')) return 'link'; if (tagName === 'img') return 'img'; if (tagName === 'textarea' || element instanceof HTMLInputElement) return 'textbox'; if (tagName === 'form') return 'form'; return undefined; }
   function nameOf(element: Element): string | undefined { const aria = element.getAttribute('aria-label'); if (aria) return aria.trim().slice(0, 500); const labelledBy = element.getAttribute('aria-labelledby'); if (labelledBy) { const text = labelledBy.split(/\s+/).map((id) => document.getElementById(id)?.textContent ?? '').join(' ').trim(); if (text) return text.slice(0, 500); } if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement || element instanceof HTMLSelectElement) { const label = element.labels?.[0]?.textContent?.trim(); if (label) return label.slice(0, 500); } const text = (element instanceof HTMLElement ? element.innerText : element.textContent ?? '').trim(); if (text) return text.slice(0, 500); if (element instanceof HTMLImageElement && element.alt) return element.alt.slice(0, 500); return undefined; }
   function px(value: string) { const number = Number.parseFloat(value); return Number.isFinite(number) ? number : 0; }
-  function showToast(text: string) { const toast = document.createElement('div'); toast.dataset.debugLensInternal = 'toast'; toast.textContent = text; Object.assign(toast.style, { position: 'fixed', zIndex: '2147483647', right: '16px', bottom: '16px', padding: '8px 11px', borderRadius: '5px', background: '#111827', color: '#fff', boxShadow: '0 3px 12px #0005', font: '12px ui-sans-serif,system-ui', pointerEvents: 'none', maxWidth: 'min(520px,90vw)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }); (document.documentElement ?? document).append(toast); setTimeout(() => toast.remove(), 2200); }
+  function showToast(text: string) { if (!document.documentElement) return; const toast = document.createElement('div'); toast.dataset.debugLensInternal = 'toast'; toast.textContent = text; Object.assign(toast.style, { position: 'fixed', zIndex: '2147483647', right: '16px', bottom: '16px', padding: '8px 11px', borderRadius: '5px', background: '#111827', color: '#fff', boxShadow: '0 3px 12px #0005', font: '12px ui-sans-serif,system-ui', pointerEvents: 'none', maxWidth: 'min(520px,90vw)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }); document.documentElement.append(toast); setTimeout(() => toast.remove(), 2200); }
 }

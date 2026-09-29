@@ -35,14 +35,15 @@ Load the built extension from `dist/`:
 
 1. Open `chrome://extensions` and enable **Developer mode**.
 2. Choose **Load unpacked** and select the `dist/` folder.
-3. Open an HTTP/HTTPS page, click Debug Lens, then choose **Capture this site** and grant optional site access.
-4. For enhanced wire metadata, open DevTools. The page hook and UI inspector work without DevTools.
+3. On first install, review the website-access explanation. Chrome grants HTTP/HTTPS host access as part of installation; there is no per-domain prompt when using UI Inspector or page capture.
+4. Open an HTTP/HTTPS page, click Debug Lens, then choose **Pick Element** or explicitly start page fetch/XHR capture.
+5. For enhanced wire metadata, open DevTools. UI inspection and page capture do not require DevTools.
 
 The DevTools panel captures through `chrome.devtools.network` and only while DevTools is open. The popup reads shared local history and remains useful after DevTools closes.
 
 ## Local demo page
 
-Run `npm run demo`, open `http://127.0.0.1:5173/demo.html`, then grant site access and start capture. The page includes local 200/401/422/500 and delayed API responses, fetch and XHR requests, a fake bearer value, console errors, DOM mutations, hidden/clipped/covered targets, flex and grid overflow, sticky without an inset, nested stacking contexts, and a long task. The API endpoint is supplied by a Vite development middleware and is not included in the production extension.
+Run `npm run demo`, open `http://127.0.0.1:5173/demo.html`, then start capture. The page includes local 200/401/422/500 and delayed API responses, fetch and XHR requests, a fake bearer value, console errors, DOM mutations, hidden/clipped/covered targets, flex and grid overflow, sticky without an inset, nested stacking contexts, and a long task. The API endpoint is supplied by a Vite development middleware and is not included in the production extension.
 
 ## Architecture
 
@@ -63,8 +64,8 @@ Capture adapters normalize browser data before UI/storage use. `RequestRecord` i
 Key areas:
 
 ```text
-src/background/       MV3 service worker and permission-gated injection
-src/content/          MAIN-world network hooks, isolated bridge and UI picker
+src/background/       MV3 service worker and capture-session lifecycle
+src/content/          MAIN-world network hooks, document-start bridge and on-demand UI picker
 src/core/capture/     Capture adapters and request normalizers
 src/core/debug-insights.ts  Evidence-based local diagnostics and flow grouping
 src/storage/          IndexedDB history and chrome.storage preferences
@@ -75,23 +76,27 @@ public/demo.html      Local debugging fixture page
 
 ## Permissions and privacy
 
-- `storage`: local preferences and short-lived capture session state.
-- `scripting`: inject capture and element-inspection scripts after user action.
-- `activeTab`: identify the page opened from the toolbar and permit user-triggered visible-tab screenshots. Screenshot capture uses the existing per-site grant as well; no screenshot is taken automatically.
-- Optional HTTP/HTTPS host access: requested for the current origin when the user starts page capture or inspection.
+- `storage`: local preferences and capture-session state.
+- `scripting`: inject the MAIN-world fetch/XHR agent after the user explicitly starts page capture.
+- `activeTab`: permits explicitly requested visible-tab screenshots. It is not used to start UI inspection or page instrumentation. Chrome requires `activeTab` or `<all_urls>` for `captureVisibleTab`; Debug Lens keeps the narrower permission and does not request `<all_urls>` just for screenshots.
+- Required HTTP/HTTPS host access (`http://*/*`, `https://*/*`): makes a small isolated content bridge available at `document_start`, supports selected-element inspection, and lets the extension read matching tab metadata. Chrome presents broad site access during install. There are no runtime `permissions.request()` calls or per-site prompts.
+- No `tabs` permission: host access supplies the matching page URL properties and the required tab operations, so the broader tabs permission is unnecessary.
 - DevTools APIs are available in the declared `devtools_page`; no host permission is needed for `chrome.devtools.network`.
 
-There is no `debugger` permission and standard operation never calls `chrome.debugger`. Captured content stays in IndexedDB unless the user copies/exports it. AI is manual prompt generation only; no prompt is sent to an external provider. Secrets are masked in the UI by default and redacted from safe copies, bug reports, and AI prompts. Explicit copy/reveal actions can expose the selected value locally. Never use real credentials in the demo page.
+There is no `debugger` permission and standard operation never calls `chrome.debugger`. Page access is not constant inspection: the content scripts install a lightweight message bridge and picker command listener, while pointer tracking, computed-style reads, observers, and DOM serialization start only after the user activates UI Inspector. The MAIN-world network agent is injected only when the user explicitly starts page capture. Screenshots require an explicit user action. Captured content stays in IndexedDB unless the user copies/exports it. AI is manual prompt generation only; no prompt is sent to an external provider. Secrets are masked in the UI by default and redacted from safe copies, bug reports, and AI prompts. Explicit copy/reveal actions can expose the selected value locally. Never use real credentials in the demo page.
+
+**Chrome Web Store permission justification:** Debug Lens is a developer debugging extension. HTTP/HTTPS host access is required to make its content bridge available, inspect a user-selected DOM element and its computed layout, capture fetch/XHR context when enabled, and correlate page interactions with local debug history. Captured page data remains local by default and is not automatically transmitted. Screenshots are only taken after an explicit user action.
 
 ## Capture limits and browser boundaries
 
-- Page hooks are opt-in and begin after permission/injection; earlier requests cannot be recovered by that source. Same-origin navigation reinjection is best effort and early navigation calls may be missed.
-- Chrome retains granted optional site access across page refreshes. An explicitly started page-capture session is kept per tab and reattached after same-origin reloads; stopping capture, navigating to another origin, closing the tab, or revoking site access ends that session.
+- Page hooks are opt-in and begin after injection; earlier requests cannot be recovered by that source. Same-origin navigation reinjection is best effort and early navigation calls may be missed.
+- UI Inspector is on-demand. The picker starts from the top frame; although the lightweight bridge is declared for all frames, picking elements inside iframes is not currently supported. Cross-origin frame and closed shadow-root access is constrained by browser/page boundaries.
 - Hooks see JavaScript-visible fetch/XHR headers, not every header sent on the wire. Browser-managed Cookie, Origin, Referer, and `Sec-*` headers may be unavailable. DevTools can enrich network metadata while open.
 - Requests made internally by a site's service worker and inaccessible/protected Chrome pages are not reliably visible. Cross-origin iframe capture is not enabled by default; closed shadow roots cannot be inspected.
 - Streaming/SSE and binary response bodies are omitted. Bodies are limited to 1 MB. Response types such as XHR blob/arraybuffer may not expose readable text.
+- Chrome-protected pages (`chrome://`, extension pages, and other restricted contexts) cannot be inspected. `file://` pages require the user to enable **Allow access to file URLs** in the extension details; Debug Lens does not request or bypass this setting. If a page was already open when Debug Lens was installed or reloaded, reload that page once so Chrome installs the declared document-start content scripts.
 - The picker blocks the click used to select an element to avoid triggering the application action. Click again after selection to reproduce it. Mutation/event tracking is scoped to the selected element and capped.
-- Computed styles and in-scope CSS variables are available, but exact stylesheet source/overridden rule tracing, full WCAG auditing, framework component trees, exact retry, and responsive device emulation are not implemented. Component screenshots cover the currently visible viewport only; offscreen areas are marked partial and are never scrolled/stitched. Capture requires the inspected tab to be active, an existing site grant, and Chrome's temporary `activeTab` access; if capture is denied from DevTools, invoke Debug Lens from its toolbar button on that page and retry. Element selection inside iframes is not currently supported. Pixel diffs are best-effort and can include browser anti-aliasing changes. Images are stored locally in IndexedDB, capped at 20 per tab, and removed by Clear history. Copied AI context includes snapshot metadata; because AI is manual prompt-copy mode, attach the saved screenshot manually to the AI tool. Coverage is estimated from nine visible points; clipping and layout messages are geometric/rule-based diagnostics, not proof of root cause. The DOM serializer bounds traversal by depth, node count, attributes, and output length before it emits a snapshot.
+- Computed styles and in-scope CSS variables are available, but exact stylesheet source/overridden rule tracing, full WCAG auditing, framework component trees, exact retry, and responsive device emulation are not implemented. Component screenshots cover the currently visible viewport only; offscreen areas are marked partial and are never scrolled/stitched. Capture requires the inspected tab to be active and a user gesture that grants temporary `activeTab` access (for example, clicking the Debug Lens toolbar action before capturing from DevTools). Pixel diffs are best-effort and can include browser anti-aliasing changes. Images are stored locally in IndexedDB, capped at 20 per tab, and removed by Clear history. Copied AI context includes snapshot metadata; because AI is manual prompt-copy mode, attach the saved screenshot manually to the AI tool. Coverage is estimated from nine visible points; clipping and layout messages are geometric/rule-based diagnostics, not proof of root cause. The DOM serializer bounds traversal by depth, node count, attributes, and output length before it emits a snapshot.
 - Performance and flow insights are lightweight browser signals and timestamp correlations, not a replacement for Chrome Performance or proof of causality.
 - AI provider calls, saved debug sessions, automatic snapshot-on-mutation/watch mode, and broad session-wide value search are not implemented in this MVP.
 
@@ -112,12 +117,15 @@ The package workflow creates `api-lens-v<version>-YYYYMMDD-HHmmss.zip` using a U
 
 ## Manual validation
 
-1. Build and load `dist/` in Chrome.
-2. Run the local demo, open the toolbar popup, and grant access to `127.0.0.1`.
-3. Trigger fetch/XHR status buttons; verify request, response body, timing, and dummy bearer capture.
-4. Pick covered, clipped, hidden, flex/grid overflow, sticky, and stacking-context targets; verify each result includes the measured evidence.
-5. Capture Element only, Element + context at multiple padding values, and Full viewport. Compare two captures and verify partial status for a target extending beyond the visible viewport.
-6. Select the mutation target, interact with it, and review Events and Changes; choose a later snapshot to compare computed styles and bounds.
-7. Trigger console error and long task; verify Console/Performance and related-flow views.
-8. Open DevTools and confirm the Network panel enriches history without a Chrome debugging banner; close DevTools and verify history remains.
-9. Verify default masking, safe cURL/debug copy, Postman export, and manual redacted AI prompt.
+1. Remove an older Debug Lens install if validating the install-time permission prompt, then build and load `dist/` in Chrome.
+2. Confirm Chrome shows HTTP/HTTPS website access at install time. Open website A and click **Pick Element**; the picker should start without another permission prompt.
+3. Stop inspection, reload website A, and pick again. Open website B and repeat; there should be no per-site or per-session prompt.
+4. Capture a component screenshot after invoking Debug Lens from the toolbar; no website-access prompt should appear.
+5. Run the local demo, reload its page if it was already open when the extension was loaded, and open the toolbar popup. Trigger fetch/XHR status buttons; verify request, response body, timing, and dummy bearer capture.
+6. Pick covered, clipped, hidden, flex/grid overflow, sticky, and stacking-context targets; verify each result includes the measured evidence.
+7. Capture Element only, Element + context at multiple padding values, and Full viewport. Compare two captures and verify partial status for a target extending beyond the visible viewport.
+8. Select the mutation target, interact with it, and review Events and Changes; choose a later snapshot to compare computed styles and bounds.
+9. Trigger console error and long task; verify Console/Performance and related-flow views.
+10. Open DevTools and confirm the Network panel enriches history without a Chrome debugging banner; close DevTools and verify history remains.
+11. Open a `chrome://` page and confirm inspection is unavailable without a permission loop. Test a `file://` URL with file access disabled and confirm the extension explains how to enable it.
+12. Verify default masking, safe cURL/debug copy, Postman export, and manual redacted AI prompt.

@@ -70,9 +70,10 @@ export type CaptureRuntimeMessage =
   | { type: 'capture:hook:stop'; tabId: number; origin: string }
   | { type: 'capture:hook:record'; payload: PageHookCapturePayload }
   | DebugRuntimeMessage;
-export type DebugRuntimeMessage =
-  | { type: 'debug:record'; payload: IncomingDebugRecord }
-  | { type: 'debug:ui:pick'; tabId: number }
-  | { type: 'debug:ui:stop'; tabId: number }
-  | { type: 'debug:ui:picker'; enabled: boolean };
+export type DebugRuntimeMessage = { type: 'debug:record'; payload: IncomingDebugRecord };
+export type InspectorControlMessage =
+  | { type: 'START_UI_INSPECTOR' }
+  | { type: 'STOP_UI_INSPECTOR' }
+  | { type: 'CAPTURE_SELECTED_ELEMENT' }
+  | { type: 'GET_INSPECTOR_STATUS' };
 export type CaptureStatus = 'active' | 'inactive' | 'unknown';

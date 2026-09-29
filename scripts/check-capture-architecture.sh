@@ -29,8 +29,27 @@ for manifest in "${manifests[@]}"; do
   fi
 done
 
-if ! grep -q '"scripting"' manifest.json || ! grep -q '"activeTab"' manifest.json || ! grep -q '"optional_host_permissions"' manifest.json; then
-  echo 'Page-hook capture must use scripting, activeTab, and optional site access.' >&2
+for manifest in "${manifests[@]}"; do
+  if ! grep -q '"host_permissions": \["http://\*/\*", "https://\*/\*"\]' "$manifest"; then
+    echo "Missing persistent HTTP/HTTPS host access in $manifest." >&2
+    exit 1
+  fi
+  if grep -q '"optional_host_permissions"' "$manifest"; then
+    echo "Per-site optional host access must not be used by the default architecture in $manifest." >&2
+    exit 1
+  fi
+  if ! grep -q '"run_at": "document_start"' "$manifest" || ! grep -q '"all_frames": true' "$manifest"; then
+    echo "Content bridges must be declared for document_start and all frames in $manifest." >&2
+    exit 1
+  fi
+done
+
+if grep -R -nE 'chrome\.permissions\.(request|contains)' src; then
+  echo 'Runtime permission prompts and per-origin permission checks are not allowed.' >&2
+  exit 1
+fi
+if ! grep -q '"scripting"' manifest.json || ! grep -q '"activeTab"' manifest.json; then
+  echo 'Page-hook injection and explicit screenshot capture require scripting and activeTab.' >&2
   exit 1
 fi
 

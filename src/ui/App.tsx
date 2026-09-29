@@ -2,7 +2,7 @@ import { Component, useEffect, useMemo, useRef, useState, type CSSProperties, ty
 import { clearDebugRecords, clearRequests, getComponentScreenshot, getComponentSnapshots, getDebugRecords, saveComponentSnapshot } from '../storage/indexed-db';
 import { getPreferences, savePreferences } from '../storage/preferences';
 import { useRequestStore } from '../shared/store';
-import type { AppearanceTheme, BodyContent, ComponentCaptureMode, ConsoleRecord, DebugInsight, DebugRecord, PerformanceRecord, Preferences, RequestRecord, UIComponentSnapshot, UIElementRecord } from '../shared/types';
+import type { AppearanceTheme, BodyContent, ComponentCaptureMode, ConsoleRecord, DebugInsight, DebugRecord, InspectorControlMessage, PerformanceRecord, Preferences, RequestRecord, UIComponentSnapshot, UIElementRecord } from '../shared/types';
 import { toAIPrompt, toAxios, toCurl, toDebugBundle, toFetch, toFullDebug, toMarkdownBugReport, toPostman, toRawHttp } from '../core/formatters';
 import { detectSecret, redactRecord, redactUrlValue } from '../core/secrets';
 import { BodyViewer } from './BodyViewer';
@@ -36,6 +36,9 @@ export function App({ devtoolsTabId }: { devtoolsTabId?: number }) {
   const [capture, setCapture] = useState(false);
   const [pageHookCapture, setPageHookCapture] = useState(false);
   const [activeTabUrl, setActiveTabUrl] = useState<string>();
+  const [pageBridgeAvailable, setPageBridgeAvailable] = useState(false);
+  const [inspectorState, setInspectorState] = useState<'idle' | 'picking' | 'selected'>('idle');
+  const [pageAccessMessage, setPageAccessMessage] = useState('Checking page access…');
   const [includeSecrets, setIncludeSecrets] = useState(false); const [prefs, setPrefs] = useState<Preferences>(); const [notice, setNotice] = useState('');
   const [appearance, setAppearance] = useState<AppearanceTheme>('system');
   const [sidebarWidth, setSidebarWidth] = useState(34);
@@ -107,6 +110,42 @@ export function App({ devtoolsTabId }: { devtoolsTabId?: number }) {
     return () => { cancelled = true; window.clearInterval(timer); };
   }, [tabId]);
   useEffect(() => {
+    if (tabId === undefined || !activeTabUrl) {
+      setPageBridgeAvailable(false); setInspectorState('idle'); setPageAccessMessage('Current page is unavailable.'); return;
+    }
+    let page: URL;
+    try { page = new URL(activeTabUrl); } catch {
+      setPageBridgeAvailable(false); setInspectorState('idle'); setPageAccessMessage('UI Inspector is unavailable on this page.'); return;
+    }
+    if (page.protocol === 'file:') {
+      setPageBridgeAvailable(false); setInspectorState('idle');
+      setPageAccessMessage('File URL access is disabled. Enable “Allow access to file URLs” for Debug Lens in chrome://extensions.'); return;
+    }
+    if (page.protocol !== 'http:' && page.protocol !== 'https:') {
+      setPageBridgeAvailable(false); setInspectorState('idle'); setPageAccessMessage('UI Inspector is unavailable on this page.'); return;
+    }
+    let cancelled = false;
+    const updateInspectorStatus = () => {
+      const statusMessage: InspectorControlMessage = { type: 'GET_INSPECTOR_STATUS' };
+      void chrome.tabs.sendMessage(tabId, statusMessage)
+        .then((response: unknown) => {
+          if (cancelled) return;
+          const status = response && typeof response === 'object' && 'status' in response ? response.status : undefined;
+          setPageBridgeAvailable(true);
+          setInspectorState(status === 'picking' || status === 'selected' ? status : 'idle');
+          setPageAccessMessage('Available on this page');
+        })
+        .catch(() => {
+          if (cancelled) return;
+          setPageBridgeAvailable(false); setInspectorState('idle');
+          setPageAccessMessage('Page bridge unavailable. Reload this page after installing or updating Debug Lens.');
+        });
+    };
+    updateInspectorStatus();
+    const timer = window.setInterval(updateInspectorStatus, 2000);
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, [tabId, activeTabUrl]);
+  useEffect(() => {
     let cancelled = false;
     const refreshDebug = async () => {
       const kinds = await Promise.all([
@@ -156,10 +195,7 @@ export function App({ devtoolsTabId }: { devtoolsTabId?: number }) {
       if (!result?.ok) { setNotice(result?.error ?? 'Unable to stop capture for this tab.'); return; }
       setPageHookCapture(false); setNotice('Page capture stopped'); return;
     }
-    const pattern = `${page.protocol}//${page.hostname}/*`;
     try {
-      const granted = await chrome.permissions.request({ origins: [pattern] });
-      if (!granted) { setNotice('Site access was not granted. Existing history is unchanged.'); return; }
       const result = await chrome.runtime.sendMessage({ type: 'capture:hook:start', tabId, origin: page.origin });
       if (!result?.ok) throw new Error(result?.error ?? 'Capture could not start.');
       setPageHookCapture(true); setCapture(true); setNotice('Capturing fetch and XHR on this tab');
@@ -169,29 +205,26 @@ export function App({ devtoolsTabId }: { devtoolsTabId?: number }) {
     if (tabId === undefined || !activeTabUrl) { setNotice('The current page URL is unavailable.'); return; }
     let page: URL;
     try { page = new URL(activeTabUrl); } catch { setNotice('UI inspection is unavailable on this page.'); return; }
-    if (!['http:', 'https:'].includes(page.protocol)) { setNotice('UI inspection works on HTTP and HTTPS pages only.'); return; }
-    const pattern = `${page.protocol}//${page.hostname}/*`;
+    if (page.protocol === 'file:') { setNotice('File URL access is disabled. Enable “Allow access to file URLs” for Debug Lens in chrome://extensions.'); return; }
+    if (page.protocol !== 'http:' && page.protocol !== 'https:') { setNotice('UI Inspector is unavailable on this page.'); return; }
     try {
-      const granted = await chrome.permissions.request({ origins: [pattern] });
-      if (!granted) { setNotice('Site access was not granted.'); return; }
-      const result = await chrome.runtime.sendMessage({ type: 'debug:ui:pick', tabId });
-      if (!result?.ok) throw new Error(result?.error ?? 'Element picker could not start.');
+      const message: InspectorControlMessage = { type: 'START_UI_INSPECTOR' };
+      const response = await chrome.tabs.sendMessage(tabId, message);
+      if (response?.ok === false) throw new Error('UI Inspector could not start on this page.');
+      setInspectorState('picking');
       setNotice('Picker active on page · press Escape to cancel');
-    } catch (error) { setNotice(error instanceof Error ? error.message : 'Element picker could not start.'); }
+    } catch { setPageBridgeAvailable(false); setNotice('Page bridge unavailable. Reload this page and try again.'); }
   }
   async function captureComponent(element: UIElementRecord, mode: ComponentCaptureMode, padding: number, relatedRequestIds: string[], relatedConsoleIds: string[]): Promise<UIComponentSnapshot> {
     if (tabId === undefined) throw new Error('The inspected tab is unavailable.');
     const tab = await chrome.tabs.get(tabId);
     if (!tab.active) throw new Error('Activate the inspected page tab before capturing its visible screenshot.');
-    const page = new URL(element.page.url);
-    const originPermission = `${page.protocol}//${page.hostname}/*`;
-    if (!await chrome.permissions.contains({ origins: [originPermission] })) throw new Error('Grant site access before capturing a component screenshot.');
     const viewport = { width: element.viewport?.width ?? element.page.viewportWidth, height: element.viewport?.height ?? element.page.viewportHeight, devicePixelRatio: element.viewport?.devicePixelRatio ?? window.devicePixelRatio ?? 1 };
     let dataUrl: string;
     try { dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, { format: 'png' }); }
     catch (error) {
       const message = error instanceof Error ? error.message : '';
-      if (/permission|activeTab|all_urls/i.test(message)) throw new Error('Chrome needs temporary screenshot access. Open Debug Lens from the toolbar on this page, then retry the capture.');
+      if (/permission|activeTab|all_urls/i.test(message)) throw new Error('Chrome needs the temporary screenshot access granted by clicking Debug Lens in the toolbar on this page, then retry the capture.');
       throw new Error('Chrome could not capture the visible tab. Confirm the inspected page is active and try again.');
     }
     const image = new Image(); image.src = dataUrl; await image.decode();
@@ -210,7 +243,7 @@ export function App({ devtoolsTabId }: { devtoolsTabId?: number }) {
     setNotice(crop.partial ? 'Visible portion captured; the selected element extends beyond the viewport.' : 'Component snapshot captured');
     return snapshot;
   }
-  async function stopElementTracking() { if (tabId !== undefined) await chrome.runtime.sendMessage({ type: 'debug:ui:stop', tabId }).catch(() => undefined); }
+  async function stopElementTracking() { if (tabId !== undefined) { const message: InspectorControlMessage = { type: 'STOP_UI_INSPECTOR' }; await chrome.tabs.sendMessage(tabId, message).catch(() => undefined); setInspectorState('idle'); } }
   async function saveSidebarWidth(value: number) { const next = Math.max(25, Math.min(55, value)); setSidebarWidth(next); await savePreferences({ sidebarWidth: next }); }
   function resizeSidebar(event: PointerEvent<HTMLButtonElement>) {
     const workspace = workspaceRef.current; if (!workspace) return;
@@ -250,10 +283,12 @@ export function App({ devtoolsTabId }: { devtoolsTabId?: number }) {
     else if (kind === 'ai') { setTab('ai'); void copy(toAIPrompt(record), 'Redacted AI prompt'); }
     else if (kind === 'bug') void copy(toMarkdownBugReport(record), 'Safe bug report');
   }
-  const captureLabel = pageHookCapture ? 'Capturing this tab' : capture ? 'DevTools capture' : 'Live capture unavailable';
+  const captureLabel = pageHookCapture ? 'Page capture' : capture ? 'DevTools capture' : 'Live capture unavailable';
+  const supportedPage = (() => { try { const protocol = new URL(activeTabUrl ?? '').protocol; return protocol === 'http:' || protocol === 'https:'; } catch { return false; } })();
+  const pageAccessLabel = pageBridgeAvailable ? '✓ Available' : activeTabUrl?.startsWith('file:') ? 'Enable file access in chrome://extensions' : pageAccessMessage;
   return <main className={devtoolsTabId === undefined ? 'app popup popup-shell' : 'app panel'}>
     <header className={devtoolsTabId === undefined ? 'topbar popup-header' : 'topbar'}><div className="brand"><span className="brand-mark" aria-hidden="true">◇</span><strong className="brand-title">Debug Lens</strong><span className="count request-count" title={`${requests.length} captured requests`}>{requests.length}</span></div>{devtoolsTabId === undefined && <span className="header-spacer" />}<div className="top-actions"><span className={`capture-state ${devtoolsTabId === undefined ? 'capture-status' : ''} ${capture ? 'on' : ''}`} role="status"><i className={devtoolsTabId === undefined ? 'capture-dot' : undefined} aria-hidden="true" /><span className={devtoolsTabId === undefined ? 'capture-status-label' : undefined}>{captureLabel}</span></span><label className="theme-control"><span className="visually-hidden">Appearance</span><select className={devtoolsTabId === undefined ? 'theme-select' : undefined} aria-label="Appearance" title={`Appearance: ${appearance}`} value={appearance} onChange={(event) => void changeAppearance(event.target.value as AppearanceTheme)}><option value="system">System theme</option><option value="light">Light theme</option><option value="dark">Dark theme</option></select></label></div></header>
-    {devtoolsTabId === undefined && <aside className="capture-hint" role="status"><span>{pageHookCapture ? 'Page hook is capturing fetch/XHR on this tab.' : capture ? 'DevTools is capturing. Enable the page hook to capture without DevTools.' : 'Capture fetch/XHR on this tab without opening DevTools. Saved history remains available.'}</span><button className={pageHookCapture ? '' : 'primary'} onClick={() => void togglePageHook()} disabled={!activeTabUrl}>{pageHookCapture ? 'Stop site capture' : 'Capture this site'}</button></aside>}
+    {devtoolsTabId === undefined && <aside className="capture-hint" role="status"><div className="capture-hint-status"><span><strong>Page access</strong><small title={pageAccessMessage}>{pageAccessLabel}</small></span><span><strong>UI Inspector</strong><small>{inspectorState === 'picking' ? '● Picking' : inspectorState === 'selected' ? '● Selected' : '○ Idle'}</small></span><span><strong>DevTools</strong><small>{capture && !pageHookCapture ? '● Active' : '○ Closed'}</small></span></div><div className="capture-hint-actions"><span>{!supportedPage ? activeTabUrl?.startsWith('file:') ? 'File URL access is disabled. Enable “Allow access to file URLs” for Debug Lens in chrome://extensions.' : 'UI Inspector is unavailable on this page.' : !pageBridgeAvailable ? pageAccessMessage : pageHookCapture ? 'Page instrumentation is capturing fetch/XHR on this tab.' : capture ? 'DevTools is enriching network capture.' : 'Open DevTools for network capture, or start page instrumentation here. History remains available.'}</span><button className={pageHookCapture ? '' : 'primary'} onClick={() => void togglePageHook()} disabled={!supportedPage}>{pageHookCapture ? 'Stop page capture' : 'Start page capture'}</button></div></aside>}
     <nav className="product-nav" aria-label="Debug areas" role="tablist">{(devtoolsTabId === undefined ? popupModes : devtoolsModes).map(([key, label]) => <button key={key} role="tab" aria-selected={mode === key} className={mode === key ? 'selected' : ''} onClick={() => setMode(key)}>{label}{key === 'console' && debugRecords.some((item) => item.kind === 'console' && item.level === 'error') ? <span className="nav-count">{debugRecords.filter((item) => item.kind === 'console' && item.level === 'error').length}</span> : null}</button>)}</nav>
     <section className="main-content" ref={mainContentRef} aria-live="polite">
     <MainContentBoundary>
@@ -261,7 +296,7 @@ export function App({ devtoolsTabId }: { devtoolsTabId?: number }) {
     {mode !== 'network' && <DebugModes mode={mode} records={debugRecords} requests={tabRequests} insights={insights} componentSnapshots={componentSnapshots} onCaptureComponent={captureComponent} onLoadComponentImage={getComponentScreenshot} onPick={() => void startElementPicker()} onStop={() => void stopElementTracking()} onCopy={(value, label) => { if (value) void copy(value, label); else setNotice(label); }} />}
     {mode === 'network' && <>
     <section className="toolbar"><label className="search-field"><span aria-hidden="true">⌕</span><input aria-label="Search requests" placeholder="Search URL, method, status…" value={query} onChange={(event) => setQuery(event.target.value)} />{query && <button className="clear-search" aria-label="Clear search" onClick={() => setQuery('')}>×</button>}</label><select aria-label="Filter by status" value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}><option value="all">All status</option><option value="2xx">2xx</option><option value="3xx">3xx</option><option value="4xx">4xx</option><option value="5xx">5xx</option></select><select aria-label="Filter by domain" value={domainFilter} onChange={(event) => setDomainFilter(event.target.value)}><option value="">All domains</option>{domains.map((domain) => <option key={domain} value={domain}>{domain}</option>)}</select><button className={`filter-chip ${hasAuthOnly ? 'active' : ''}`} aria-pressed={hasAuthOnly} onClick={() => setHasAuthOnly(!hasAuthOnly)}>Has auth</button><details className="menu sensitive-menu"><summary>{includeSecrets ? 'Sensitive: reveal ▾' : 'Sensitive: mask ▾'}</summary><div className="menu-popover menu-align-right" role="menu"><button role="menuitemradio" aria-checked={!includeSecrets} onClick={(event) => { closeMenu(event); void changeSecrets(false); }}>Mask secrets</button><button role="menuitemradio" aria-checked={includeSecrets} onClick={(event) => { closeMenu(event); void changeSecrets(true); }}>Reveal in copies</button></div></details><details className="menu clear-menu"><summary className="quiet">Clear ▾</summary><div className="menu-popover menu-align-right"><button className="danger-action" onClick={(event) => { closeMenu(event); void clearHistory(); }}>Clear all history</button></div></details></section>
-      <section className="workspace" ref={workspaceRef} style={{ '--sidebar-width': `${sidebarWidth}%` } as CSSProperties}><aside className="request-list" aria-label="Captured requests"><div className="list-heading"><strong>Requests</strong><span>{visibleRequests.length} {visibleRequests.length === 1 ? 'request' : 'requests'}</span></div>{loading && !requests.length ? <div className="empty">Loading local history…</div> : visibleRequests.length ? visibleRequests.map((r) => <RequestRow key={r.id} record={r} selected={selected?.id === r.id} onClick={() => select(r.id)} />) : <div className="empty"><strong>No API requests captured yet.</strong><span>{pageHookCapture ? 'Use the app in this tab; fetch and XHR traffic will appear here.' : devtoolsTabId !== undefined || capture ? 'Waiting for API traffic…' : 'Choose “Capture this site” to capture fetch/XHR without opening DevTools.'}</span><small>Traffic stays in this browser unless you explicitly copy or send it.</small></div>}</aside><button className="workspace-splitter" role="separator" aria-orientation="vertical" aria-label="Resize request list" aria-valuemin={25} aria-valuemax={55} aria-valuenow={Math.round(sidebarWidth)} onPointerDown={resizeSidebar} onKeyDown={resizeWithKeyboard} />
+      <section className="workspace" ref={workspaceRef} style={{ '--sidebar-width': `${sidebarWidth}%` } as CSSProperties}><aside className="request-list" aria-label="Captured requests"><div className="list-heading"><strong>Requests</strong><span>{visibleRequests.length} {visibleRequests.length === 1 ? 'request' : 'requests'}</span></div>{loading && !requests.length ? <div className="empty">Loading local history…</div> : visibleRequests.length ? visibleRequests.map((r) => <RequestRow key={r.id} record={r} selected={selected?.id === r.id} onClick={() => select(r.id)} />) : <div className="empty"><strong>No API requests captured yet.</strong><span>{pageHookCapture ? 'Use the app in this tab; fetch and XHR traffic will appear here.' : devtoolsTabId !== undefined || capture ? 'Waiting for API traffic…' : 'Choose “Start page capture” to capture fetch/XHR without opening DevTools.'}</span><small>Traffic stays in this browser unless you explicitly copy or send it.</small></div>}</aside><button className="workspace-splitter" role="separator" aria-orientation="vertical" aria-label="Resize request list" aria-valuemin={25} aria-valuemax={55} aria-valuenow={Math.round(sidebarWidth)} onPointerDown={resizeSidebar} onKeyDown={resizeWithKeyboard} />
       <section className="details">{selected ? <><div className="selected-head"><div className="endpoint"><div className="endpoint-title"><span className="method">{selected.request.method}</span><strong title={safeSelected?.request.url}>{prettyUrl(safeSelected?.request.url ?? selected.request.url)}</strong><span className={statusClass(selected.response.status)}>{selected.response.status || 'ERR'} {selected.response.statusText}</span></div><div className="endpoint-meta"><span>{selected.request.host ?? hostOf(selected.request.url)}</span><span>{formatDuration(selected.timing?.total)}</span><span>{formatSize(selected.meta?.size)}</span><span>{selected.meta?.resourceType ?? 'request'}</span><span>{selected.meta?.httpVersion}</span></div></div><div className="row-actions"><button className={`icon-button pin-action ${selected.flags.pinned ? 'pinned' : ''}`} aria-label={selected.flags.pinned ? 'Unpin request' : 'Pin request'} title={selected.flags.pinned ? 'Unpin request' : 'Pin request'} onClick={() => void togglePin(selected.id)}>{selected.flags.pinned ? '★' : '☆'}</button><details className="menu row-menu"><summary className="icon-button" aria-label="Request actions">•••</summary><div className="menu-popover menu-align-right"><button onClick={(event) => { closeMenu(event); void copy(selected.request.url, 'URL'); }}>Copy URL</button><button className="danger-action" onClick={(event) => { closeMenu(event); void remove(selected.id); }}>Delete request</button></div></details></div></div>
         <nav className="tabs" aria-label="Request details" role="tablist">{(['overview', 'request', 'response', 'headers', 'timing'] as DetailTab[]).map((name) => <button key={name} id={`request-tab-${name}`} role="tab" aria-controls="request-detail-panel" aria-selected={tab === name} className={tab === name ? 'selected' : ''} onClick={() => setTab(name)}>{name}</button>)}<details className="menu more-tabs"><summary>More ▾</summary><div className="menu-popover"><button id="request-tab-auth" role="tab" aria-controls="request-detail-panel" aria-selected={tab === 'auth'} onClick={(event) => { closeMenu(event); setTab('auth'); }}>Authentication</button><button id="request-tab-ai" role="tab" aria-controls="request-detail-panel" aria-selected={tab === 'ai'} onClick={(event) => { closeMenu(event); setTab('ai'); }}>AI prompt</button></div></details></nav>
         <div className="detail-content" id="request-detail-panel" role="tabpanel" aria-labelledby={`request-tab-${tab}`} tabIndex={0}><div key={tab} className="detail-tab-pane" data-state="active">{tab === 'overview' && safeSelected && <Overview record={safeSelected} />}{tab === 'request' && safeSelected && <BodyPanel title="Request" headers={selected.request.headers} body={bodyForDisplay(safeSelected.request.body)} mimeType={safeSelected.request.body?.mimeType} json={safeSelected.request.body?.json} graphQL={/graphql/i.test(selected.request.url)} unavailable={undefined} onCopy={copy} />}{tab === 'headers' && <><BodyPanel title="Request" section="headers" headers={selected.request.headers} body={undefined} onCopy={copy} /><BodyPanel title="Response" section="headers" headers={selected.response.headers} body={undefined} onCopy={copy} /></>}{tab === 'response' && safeSelected && <BodyPanel title="Response" section="body" headers={[]} body={safeSelected.response.body?.text} json={safeSelected.response.body?.json} mimeType={safeSelected.response.mimeType} graphQL={/graphql/i.test(selected.request.url)} unavailable={safeSelected.response.body?.unavailableReason} status={`${selected.response.status || 'ERR'} ${selected.response.statusText ?? ''}`.trim()} size={formatSize(selected.meta?.size)} onCopy={copy} />}{tab === 'timing' && <TimingPanel record={selected} />}{tab === 'auth' && <AuthPanel record={selected} onCopy={copy} />}{tab === 'ai' && <section className="ai-panel"><div className="ai-heading">Manual AI debug prompt <span>redacted by default</span></div><p>Review the included context, then copy it into your preferred AI tool. API Lens does not send data automatically.</p><pre>{toAIPrompt(selected)}</pre><button className="primary" onClick={() => copyAction('ai', selected)}>Copy AI prompt</button></section>}</div></div>

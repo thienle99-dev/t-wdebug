@@ -27,15 +27,6 @@ chrome.runtime.onMessage.addListener((rawMessage: unknown, sender, sendResponse)
     return;
   }
 
-  if (message.type === 'debug:ui:pick' || message.type === 'debug:ui:stop') {
-    if (!Number.isInteger(message.tabId) || message.tabId < 0) return;
-    void setUiPicker(message.tabId, message.type === 'debug:ui:pick')
-      .then(() => sendResponse({ ok: true }))
-      .catch((error: unknown) => sendResponse({ ok: false, error: safeError(error) }));
-    return true;
-  }
-  if (message.type === 'debug:ui:picker') return;
-
   if (!Number.isInteger(message.tabId) || message.tabId < 0) return;
   if (message.type === 'capture:heartbeat' && typeof message.active === 'boolean') {
     void updateHeartbeat(message.tabId, message.active)
@@ -72,8 +63,10 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   void refreshHookForNavigation(tabId, tab.url);
 });
 chrome.runtime.onStartup.addListener(() => { void restorePageHooks(); });
-chrome.runtime.onInstalled.addListener(() => { void restorePageHooks(); });
-chrome.permissions.onRemoved.addListener((removed) => { void clearHooksWithoutPermission(removed.origins ?? []); });
+chrome.runtime.onInstalled.addListener((details) => {
+  void restorePageHooks();
+  if (details.reason === 'install') void chrome.tabs.create({ url: chrome.runtime.getURL('onboarding.html') }).catch(() => undefined);
+});
 
 async function startPageHook(tabId: number, requestedOrigin: string): Promise<void> {
   const tab = await chrome.tabs.get(tabId);
@@ -81,9 +74,6 @@ async function startPageHook(tabId: number, requestedOrigin: string): Promise<vo
   const originUrl = parseHttpUrl(requestedOrigin);
   if (!page || !originUrl || page.origin !== originUrl.origin) throw new Error('The active tab changed. Reopen API Lens on the site you want to capture.');
   const origin = page.origin;
-  const pattern = permissionPattern(origin);
-  if (!await chrome.permissions.contains({ origins: [pattern] })) throw new Error('Site access was not granted.');
-
   await updateHookTab(tabId, origin);
   try {
     await injectPageHook(tabId);
@@ -112,7 +102,6 @@ async function refreshHookForNavigation(tabId: number, url?: string): Promise<vo
   const page = parseHttpUrl(url);
   if (!page) return;
   if (page.origin !== origin) { await updateHookTab(tabId, undefined); return; }
-  if (!await chrome.permissions.contains({ origins: [permissionPattern(origin)] })) { await updateHookTab(tabId, undefined); return; }
   try { await injectPageHook(tabId); } catch { /* Protected pages or browser restrictions can prevent reinjection. */ }
 }
 
@@ -128,7 +117,7 @@ async function restorePageHooks(): Promise<void> {
   const openTabs = new Map(tabs.flatMap((tab) => tab.id === undefined ? [] : [[String(tab.id), tab] as const]));
   for (const [tabId, origin] of Object.entries(sessions)) {
     const tab = openTabs.get(tabId);
-    if (!tab || parseHttpUrl(tab.url)?.origin !== origin || !await chrome.permissions.contains({ origins: [permissionPattern(origin)] })) {
+    if (!tab || parseHttpUrl(tab.url)?.origin !== origin) {
       delete sessions[tabId];
       continue;
     }
@@ -138,31 +127,10 @@ async function restorePageHooks(): Promise<void> {
   await chrome.storage.session.remove(HOOK_SESSIONS_KEY);
 }
 
-async function clearHooksWithoutPermission(removedOrigins: string[]): Promise<void> {
-  const stored = await chrome.storage.local.get(HOOK_SESSIONS_KEY);
-  const sessions = isHookSessions(stored[HOOK_SESSIONS_KEY]) ? { ...stored[HOOK_SESSIONS_KEY] } : {};
-  for (const [tabId, origin] of Object.entries(sessions)) {
-    const pattern = permissionPattern(origin);
-    if (!removedOrigins.includes(pattern) && await chrome.permissions.contains({ origins: [pattern] })) continue;
-    await chrome.tabs.sendMessage(Number(tabId), { type: 'capture:hook:set-enabled', enabled: false }).catch(() => undefined);
-    delete sessions[tabId];
-  }
-  await chrome.storage.local.set({ [HOOK_SESSIONS_KEY]: sessions });
-}
-
 async function injectPageHook(tabId: number): Promise<void> {
   // Start the isolated bridge first so early page requests can be queued and drained.
   await chrome.scripting.executeScript({ target: { tabId }, files: ['capture/hook-bridge.js'], world: 'ISOLATED', injectImmediately: true });
   await chrome.scripting.executeScript({ target: { tabId }, files: ['capture/main-world.js'], world: 'MAIN', injectImmediately: true });
-}
-
-async function setUiPicker(tabId: number, enabled: boolean): Promise<void> {
-  const tab = await chrome.tabs.get(tabId);
-  const page = parseHttpUrl(tab.url);
-  if (!page) throw new Error('UI inspection is available on HTTP and HTTPS pages only.');
-  if (!await chrome.permissions.contains({ origins: [permissionPattern(page.origin)] })) throw new Error('Grant site access from the toolbar before inspecting page elements.');
-  if (enabled) await chrome.scripting.executeScript({ target: { tabId }, files: ['capture/ui-inspector.js'], world: 'ISOLATED', injectImmediately: true });
-  await chrome.tabs.sendMessage(tabId, { type: 'debug:ui:picker', enabled }).catch(() => { throw new Error('Could not reach the page inspector. Reload the page and try again.'); });
 }
 
 async function persistHookCapture(payload: PageHookCapturePayload, tabId: number, tabUrl?: string): Promise<void> {
@@ -171,7 +139,6 @@ async function persistHookCapture(payload: PageHookCapturePayload, tabId: number
   const origin = sessions[String(tabId)];
   const page = parseHttpUrl(tabUrl);
   if (!origin || !page || page.origin !== origin) return;
-  if (!await chrome.permissions.contains({ origins: [permissionPattern(origin)] })) return;
   const preferences = await getPreferences();
   if (!preferences.captureEnabled) return;
   const record = normalizePageHookCapture(payload, tabId, tabUrl);
@@ -197,11 +164,7 @@ async function readCaptureStatus(tabId: number): Promise<{ state: CaptureStatus;
   const origin = sessions[String(tabId)];
   if (!origin) return { state: devtoolsActive ? 'active' : 'inactive', active: devtoolsActive, pageHookActive: false, devtoolsActive };
   const tab = await chrome.tabs.get(tabId).catch(() => undefined);
-  let pageHookActive = parseHttpUrl(tab?.url)?.origin === origin;
-  if (pageHookActive && !await chrome.permissions.contains({ origins: [permissionPattern(origin)] })) {
-    await updateHookTab(tabId, undefined);
-    pageHookActive = false;
-  }
+  const pageHookActive = parseHttpUrl(tab?.url)?.origin === origin;
   const active = devtoolsActive || pageHookActive;
   return { state: active ? 'active' : 'inactive', active, pageHookActive, devtoolsActive };
 }
@@ -212,11 +175,6 @@ async function updateHookTab(tabId: number, origin: string | undefined): Promise
   if (origin) sessions[String(tabId)] = origin;
   else delete sessions[String(tabId)];
   await chrome.storage.local.set({ [HOOK_SESSIONS_KEY]: sessions });
-}
-
-function permissionPattern(origin: string): string {
-  const parsed = new URL(origin);
-  return `${parsed.protocol}//${parsed.hostname}/*`;
 }
 
 function parseHttpUrl(value?: string): URL | undefined {

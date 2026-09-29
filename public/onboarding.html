@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Welcome to Debug Lens</title>
+    <style>
+      :root { color-scheme: light dark; font: 15px/1.55 system-ui, sans-serif; --bg: #f8fafc; --panel: #fff; --text: #0f172a; --muted: #475569; --border: #e2e8f0; --accent: #2563eb; }
+      @media (prefers-color-scheme: dark) { :root { --bg: #0d1117; --panel: #111820; --text: #e6edf3; --muted: #a8b3c2; --border: #263241; --accent: #58a6ff; } }
+      * { box-sizing: border-box; } body { margin: 0; background: var(--bg); color: var(--text); }
+      main { width: min(760px, calc(100% - 32px)); margin: 56px auto; } .panel { padding: 28px; border: 1px solid var(--border); border-radius: 12px; background: var(--panel); }
+      h1 { margin: 0 0 8px; font-size: 28px; } h2 { margin: 26px 0 8px; font-size: 17px; } p, li { color: var(--muted); } .steps { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; padding: 0; list-style: none; counter-reset: step; }
+      .steps li { padding: 14px; border: 1px solid var(--border); border-radius: 8px; } .steps li::before { counter-increment: step; content: counter(step) '. '; color: var(--accent); font-weight: 700; }
+      .access { padding: 14px; border-left: 3px solid var(--accent); background: color-mix(in srgb, var(--accent) 8%, var(--panel)); }
+      @media (max-width: 560px) { main { margin: 20px auto; } .steps { grid-template-columns: 1fr; } .panel { padding: 20px; } }
+    </style>
+  </head>
+  <body>
+    <main>
+      <section class="panel">
+        <h1>Welcome to Debug Lens</h1>
+        <p>Inspect frontend behavior and API traffic from the browser, with debugging data stored locally by default.</p>
+        <h2>Get started</h2>
+        <ol class="steps">
+          <li>Open a supported HTTP or HTTPS webpage.</li>
+          <li>Click Debug Lens in the toolbar and choose <strong>Pick Element</strong>.</li>
+          <li>Hover over the page and click the UI element you want to inspect. Press Escape to cancel.</li>
+          <li>Review DOM, styles, layout, visibility, accessibility, and related local debug records.</li>
+        </ol>
+        <h2>Why Debug Lens needs website access</h2>
+        <div class="access"><p>Persistent HTTP/HTTPS access lets the lightweight content bridge be ready when you explicitly start inspection. It is also used for optional fetch/XHR capture and to correlate local page activity. UI inspection, screenshots, and AI actions remain user initiated.</p></div>
+        <h2>Privacy</h2>
+        <ul>
+          <li>Page content, request/response data, and selected-element snapshots stay in local extension storage by default.</li>
+          <li>Nothing is uploaded automatically. AI prompt creation is explicit and secrets are redacted by default.</li>
+          <li>Component screenshots are captured only when you request them. Use Clear history to remove stored debug data.</li>
+          <li>Chrome-protected pages are unavailable. To inspect local files, separately enable <strong>Allow access to file URLs</strong> in the extension details.</li>
+        </ul>
+        <p>You can change Debug Lens site access from Chrome’s extension settings. Restricting site access may make the page bridge unavailable on pages Chrome no longer allows it to reach.</p>
+      </section>
+    </main>
+  </body>
+</html>
