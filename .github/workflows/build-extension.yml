@@ -34,13 +34,16 @@ jobs:
       - name: Build extension
         run: npm run build
 
-      - name: Package and verify ZIP
+      - name: Package and verify extension
         id: package
         shell: bash
         run: |
           set -euo pipefail
           version="$(node -p "require('./package.json').version")"
-          zip_name="api-lens-${version}-${GITHUB_RUN_NUMBER}.zip"
+          build_timestamp="$(date -u +'%Y%m%d-%H%M%S')"
+          artifact_name="api-lens-v${version}-${build_timestamp}"
+          zip_name="${artifact_name}.zip"
+          echo "artifact_name=${artifact_name}" >> "$GITHUB_OUTPUT"
           (cd dist && zip -q -r "${RUNNER_TEMP}/${zip_name}" .)
           unzip -Z1 "${RUNNER_TEMP}/${zip_name}" | grep -Fxq 'manifest.json'
           unzip -Z1 "${RUNNER_TEMP}/${zip_name}" | grep -Fxq 'popup.html'
@@ -52,7 +55,7 @@ jobs:
       - name: Upload Chrome extension ZIP
         uses: actions/upload-artifact@v4
         with:
-          name: api-lens-${{ github.sha }}
+          name: ${{ steps.package.outputs.artifact_name }}
           path: dist/**
           if-no-files-found: error
           retention-days: 30

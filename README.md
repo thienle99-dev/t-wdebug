@@ -42,7 +42,7 @@ To load the built extension, open `chrome://extensions`, enable **Developer mode
 
 ## Download a ZIP from GitHub Actions
 
-Every push and pull request runs the build and uploads a versioned ZIP artifact. Open the completed workflow run on GitHub and download the `api-lens-<commit-sha>` artifact. Extract the downloaded ZIP; its root contains `manifest.json`. Then open `chrome://extensions`, enable **Developer mode**, choose **Load unpacked**, and select the extracted directory. Chrome's **Load unpacked** flow needs the extracted folder; it does not install the ZIP directly. Artifacts are retained for 30 days.
+Every push and pull request runs the build and uploads a ZIP artifact named `api-lens-v<version>-YYYYMMDD-HHmmss`, for example `api-lens-v0.1.0-20260929-043015`. The timestamp uses UTC and includes year, month, day, hour, minute, and second. Open the completed workflow run on GitHub and download the artifact with that name. Extract the ZIP once; its root contains `manifest.json`. Then open `chrome://extensions`, enable **Developer mode**, choose **Load unpacked**, and select the extracted directory. Chrome's **Load unpacked** flow needs the extracted folder; it does not install the ZIP directly. Artifacts are retained for 30 days.
 
 ## Architecture
 
