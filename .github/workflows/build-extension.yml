@@ -2,6 +2,8 @@ name: Build Chrome extension
 
 on:
   push:
+    branches: ['**']
+    tags: ['v*']
   pull_request:
 
 permissions:
@@ -47,6 +49,7 @@ jobs:
           artifact_name="api-lens-v${version}-${build_timestamp}"
           zip_name="${artifact_name}.zip"
           echo "artifact_name=${artifact_name}" >> "$GITHUB_OUTPUT"
+          echo "zip_name=${zip_name}" >> "$GITHUB_OUTPUT"
           (cd dist && zip -q -r "${RUNNER_TEMP}/${zip_name}" .)
           unzip -Z1 "${RUNNER_TEMP}/${zip_name}" | grep -Fxq 'manifest.json'
           unzip -Z1 "${RUNNER_TEMP}/${zip_name}" | grep -Fxq 'popup.html'
@@ -55,10 +58,30 @@ jobs:
           unzip -Z1 "${RUNNER_TEMP}/${zip_name}" | grep -Fxq 'assets/service-worker.js'
           unzip -Z1 "${RUNNER_TEMP}/${zip_name}" | grep -Fxq 'icons/icon32.png'
 
-      - name: Upload Chrome extension ZIP
+      - name: Upload verified extension ZIP
         uses: actions/upload-artifact@v4
         with:
           name: ${{ steps.package.outputs.artifact_name }}
-          path: dist/**
+          path: ${{ runner.temp }}/${{ steps.package.outputs.zip_name }}
           if-no-files-found: error
           retention-days: 30
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build-and-package
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - name: Download verified extension ZIP
+        uses: actions/download-artifact@v4
+        with:
+          pattern: api-lens-v*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Create GitHub Release and upload extension
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" release-assets/*.zip --title "$GITHUB_REF_NAME" --generate-notes
