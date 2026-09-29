@@ -1,0 +1,58 @@
+name: Build Chrome extension
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: extension-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-package:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Run unit tests
+        run: npm test
+
+      - name: Build extension
+        run: npm run build
+
+      - name: Package and verify ZIP
+        id: package
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(node -p "require('./package.json').version")"
+          zip_name="api-lens-${version}-${GITHUB_RUN_NUMBER}.zip"
+          (cd dist && zip -q -r "${RUNNER_TEMP}/${zip_name}" .)
+          unzip -Z1 "${RUNNER_TEMP}/${zip_name}" | grep -Fxq 'manifest.json'
+          unzip -Z1 "${RUNNER_TEMP}/${zip_name}" | grep -Fxq 'popup.html'
+          unzip -Z1 "${RUNNER_TEMP}/${zip_name}" | grep -Fxq 'panel.html'
+          unzip -Z1 "${RUNNER_TEMP}/${zip_name}" | grep -Fxq 'devtools.html'
+          unzip -Z1 "${RUNNER_TEMP}/${zip_name}" | grep -Fxq 'assets/service-worker.js'
+          unzip -Z1 "${RUNNER_TEMP}/${zip_name}" | grep -Fxq 'icons/icon32.png'
+
+      - name: Upload Chrome extension ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: api-lens-${{ github.sha }}
+          path: dist/**
+          if-no-files-found: error
+          retention-days: 30

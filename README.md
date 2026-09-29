@@ -40,6 +40,10 @@ npm run typecheck  # Run TypeScript project checks
 
 To load the built extension, open `chrome://extensions`, enable **Developer mode**, select **Load unpacked**, and choose the `dist/` directory. Open the toolbar popup and select **Capture** for the active tab. Use the page, then open Chrome DevTools and select **API Lens** to inspect the shared request history.
 
+## Download a ZIP from GitHub Actions
+
+Every push and pull request runs the build and uploads a versioned ZIP artifact. Open the completed workflow run on GitHub and download the `api-lens-<commit-sha>` artifact. Extract the downloaded ZIP; its root contains `manifest.json`. Then open `chrome://extensions`, enable **Developer mode**, choose **Load unpacked**, and select the extracted directory. Chrome's **Load unpacked** flow needs the extracted folder; it does not install the ZIP directly. Artifacts are retained for 30 days.
+
 ## Architecture
 
 ```text
