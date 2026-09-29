@@ -6,6 +6,7 @@ Debug Lens (formerly API Lens) is a local-first Chrome extension for investigati
 
 - **Network:** opt-in MAIN-world `fetch`/XHR capture without DevTools, plus richer `chrome.devtools.network` capture while DevTools is open. Records merge into one IndexedDB history.
 - **UI Inspector:** pick an element, inspect a bounded DOM snapshot, computed styles, box model, CSS variables, accessibility heuristics, evidence-backed visibility/clickability/coverage/clipping checks, stacking contexts, scroll ancestors, flex/grid and sticky/fixed diagnostics, plus scoped event/mutation history and snapshot diffs.
+- **Component Snapshot:** explicitly capture an element, element with surrounding context, or the visible viewport as PNG; compare before/after pixels, DOM, computed styles, bounds, and accessibility metadata.
 - **Console:** records page `console.error`, `console.warn`, uncaught errors, and unhandled rejections while page capture is active.
 - **Performance:** captures supported resource, long-task, layout-shift, and paint entries; local insights flag slow/repeated/large requests and nearby errors.
 - **Flows:** best-effort timelines group selected-element interactions with nearby requests, console records, and DOM mutations. These are correlations, not proof of causation.
@@ -76,7 +77,7 @@ public/demo.html      Local debugging fixture page
 
 - `storage`: local preferences and short-lived capture session state.
 - `scripting`: inject capture and element-inspection scripts after user action.
-- `activeTab`: identify the page opened from the toolbar.
+- `activeTab`: identify the page opened from the toolbar and permit user-triggered visible-tab screenshots. Screenshot capture uses the existing per-site grant as well; no screenshot is taken automatically.
 - Optional HTTP/HTTPS host access: requested for the current origin when the user starts page capture or inspection.
 - DevTools APIs are available in the declared `devtools_page`; no host permission is needed for `chrome.devtools.network`.
 
@@ -90,7 +91,7 @@ There is no `debugger` permission and standard operation never calls `chrome.deb
 - Requests made internally by a site's service worker and inaccessible/protected Chrome pages are not reliably visible. Cross-origin iframe capture is not enabled by default; closed shadow roots cannot be inspected.
 - Streaming/SSE and binary response bodies are omitted. Bodies are limited to 1 MB. Response types such as XHR blob/arraybuffer may not expose readable text.
 - The picker blocks the click used to select an element to avoid triggering the application action. Click again after selection to reproduce it. Mutation/event tracking is scoped to the selected element and capped.
-- Computed styles and in-scope CSS variables are available, but exact stylesheet source/overridden rule tracing, full WCAG auditing, screenshots, framework component trees, exact retry, and responsive device emulation are not implemented. Coverage is estimated from nine visible points; clipping and layout messages are geometric/rule-based diagnostics, not proof of root cause. The DOM serializer bounds traversal by depth, node count, attributes, and output length before it emits a snapshot.
+- Computed styles and in-scope CSS variables are available, but exact stylesheet source/overridden rule tracing, full WCAG auditing, framework component trees, exact retry, and responsive device emulation are not implemented. Component screenshots cover the currently visible viewport only; offscreen areas are marked partial and are never scrolled/stitched. Capture requires the inspected tab to be active and an existing site grant. Element selection inside iframes is not currently supported. Pixel diffs are best-effort and can include browser anti-aliasing changes. Images are stored locally in IndexedDB, capped at 20 per tab, and removed by Clear history. Copied AI context includes snapshot metadata; because AI is manual prompt-copy mode, attach the saved screenshot manually to the AI tool. Coverage is estimated from nine visible points; clipping and layout messages are geometric/rule-based diagnostics, not proof of root cause. The DOM serializer bounds traversal by depth, node count, attributes, and output length before it emits a snapshot.
 - Performance and flow insights are lightweight browser signals and timestamp correlations, not a replacement for Chrome Performance or proof of causality.
 - AI provider calls, saved debug sessions, snapshot diff, and broad session-wide value search are not implemented in this MVP.
 
@@ -115,7 +116,8 @@ The package workflow creates `api-lens-v<version>-YYYYMMDD-HHmmss.zip` using a U
 2. Run the local demo, open the toolbar popup, and grant access to `127.0.0.1`.
 3. Trigger fetch/XHR status buttons; verify request, response body, timing, and dummy bearer capture.
 4. Pick covered, clipped, hidden, flex/grid overflow, sticky, and stacking-context targets; verify each result includes the measured evidence.
-5. Select the mutation target, interact with it, and review Events and Changes; choose a later snapshot to compare computed styles and bounds.
-6. Trigger console error and long task; verify Console/Performance and related-flow views.
-7. Open DevTools and confirm the Network panel enriches history without a Chrome debugging banner; close DevTools and verify history remains.
-8. Verify default masking, safe cURL/debug copy, Postman export, and manual redacted AI prompt.
+5. Capture Element only, Element + context at multiple padding values, and Full viewport. Compare two captures and verify partial status for a target extending beyond the visible viewport.
+6. Select the mutation target, interact with it, and review Events and Changes; choose a later snapshot to compare computed styles and bounds.
+7. Trigger console error and long task; verify Console/Performance and related-flow views.
+8. Open DevTools and confirm the Network panel enriches history without a Chrome debugging banner; close DevTools and verify history remains.
+9. Verify default masking, safe cURL/debug copy, Postman export, and manual redacted AI prompt.

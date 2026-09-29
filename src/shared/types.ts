@@ -31,7 +31,7 @@ export interface UIElementRecord {
   ancestry: Array<{ selector: string; tagName: string; id?: string; classes: string[] }>;
   accessibility: { role?: string; name?: string; label?: string; labelledBy?: string; describedBy?: string; tabindex?: string; disabled: boolean; checks: string[] };
   visibility: { display: string; visibility: string; opacity: number; inViewport: boolean; clipped: boolean; covered: boolean; coveringSelector?: string; hiddenBy?: string[]; clippingSelector?: string; coverage?: { samplesCovered: number; samplesTested: number; certainty: 'likely' | 'possible' } };
-  viewport?: { width: number; height: number; scrollX: number; scrollY: number };
+  viewport?: { width: number; height: number; scrollX: number; scrollY: number; devicePixelRatio?: number };
   layout?: {
     position: string; display?: string; containingBlock?: string; parentDisplay?: string; overflowX: string; overflowY: string;
     flex?: Record<string, string>; grid?: Record<string, string>;
@@ -41,6 +41,16 @@ export interface UIElementRecord {
   interaction?: { state: 'available' | 'blocked' | 'possible'; reasons: string[]; pointerEvents: string; disabled: boolean; keyboardReachable: boolean };
   diagnostics: Array<{ severity: 'info' | 'warning' | 'error'; title: string; evidence: string }>;
   page: { url: string; viewportWidth: number; viewportHeight: number };
+}
+export type ComponentCaptureMode = 'element' | 'context' | 'viewport';
+export interface UIComponentSnapshot {
+  id: string; tabId: number; timestamp: number; mode: ComponentCaptureMode; contextPadding: number;
+  element: { selector: string; tagName: string; text?: string; outerHTML?: string };
+  screenshot: { dataUrl?: string; width: number; height: number; mimeType: 'image/png'; partial: boolean; visibleBounds: { x: number; y: number; width: number; height: number } };
+  bounds: { x: number; y: number; width: number; height: number };
+  viewport: { width: number; height: number; devicePixelRatio: number };
+  styles: Record<string, string>; accessibility?: UIElementRecord['accessibility'];
+  pageUrl?: string; relatedRequestIds: string[]; relatedConsoleIds: string[];
 }
 export interface EventRecord { kind: 'event'; id: string; tabId: number; timestamp: number; type: string; targetSelector?: string; key?: string; value?: string; stack?: StackFrame[] }
 export interface ConsoleRecord { kind: 'console'; id: string; tabId: number; timestamp: number; level: 'error' | 'warning'; message: string; stack?: StackFrame[]; pageUrl?: string }

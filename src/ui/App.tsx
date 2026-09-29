@@ -1,13 +1,14 @@
 import { Component, useEffect, useMemo, useRef, useState, type CSSProperties, type ErrorInfo, type KeyboardEvent, type MouseEvent, type PointerEvent, type ReactNode } from 'react';
-import { clearDebugRecords, clearRequests, getDebugRecords } from '../storage/indexed-db';
+import { clearDebugRecords, clearRequests, getComponentScreenshot, getComponentSnapshots, getDebugRecords, saveComponentSnapshot } from '../storage/indexed-db';
 import { getPreferences, savePreferences } from '../storage/preferences';
 import { useRequestStore } from '../shared/store';
-import type { AppearanceTheme, BodyContent, ConsoleRecord, DebugInsight, DebugRecord, PerformanceRecord, Preferences, RequestRecord, UIElementRecord } from '../shared/types';
+import type { AppearanceTheme, BodyContent, ComponentCaptureMode, ConsoleRecord, DebugInsight, DebugRecord, PerformanceRecord, Preferences, RequestRecord, UIComponentSnapshot, UIElementRecord } from '../shared/types';
 import { toAIPrompt, toAxios, toCurl, toDebugBundle, toFetch, toFullDebug, toMarkdownBugReport, toPostman, toRawHttp } from '../core/formatters';
 import { detectSecret, redactRecord, redactUrlValue } from '../core/secrets';
 import { BodyViewer } from './BodyViewer';
 import { DebugModes, type ProductMode } from './DebugModes';
 import { deriveInsights } from '../core/debug-insights';
+import { calculateScreenshotCrop, cropScreenshot, makeComponentSnapshot } from '../ui-inspector/component-snapshot';
 import '../styles.css';
 
 type DetailTab = 'overview' | 'request' | 'response' | 'headers' | 'timing' | 'auth' | 'ai';
@@ -31,6 +32,7 @@ export function App({ devtoolsTabId }: { devtoolsTabId?: number }) {
   const [query, setQuery] = useState(''); const [tab, setTab] = useState<DetailTab>('overview');
   const [mode, setMode] = useState<ProductMode>(devtoolsTabId === undefined ? 'recent' : 'network');
   const [debugRecords, setDebugRecords] = useState<DebugRecord[]>([]);
+  const [componentSnapshots, setComponentSnapshots] = useState<UIComponentSnapshot[]>([]);
   const [capture, setCapture] = useState(false);
   const [pageHookCapture, setPageHookCapture] = useState(false);
   const [activeTabUrl, setActiveTabUrl] = useState<string>();
@@ -111,9 +113,11 @@ export function App({ devtoolsTabId }: { devtoolsTabId?: number }) {
         getDebugRecords('ui-snapshot', tabId), getDebugRecords('event', tabId), getDebugRecords('console', tabId),
         getDebugRecords('mutation', tabId), getDebugRecords('performance', tabId),
       ]);
+      const componentSnapshots = await getComponentSnapshots(tabId);
       if (!cancelled) {
         const next = kinds.flat().sort((a, b) => b.timestamp - a.timestamp) as DebugRecord[];
         setDebugRecords((current) => current.length === next.length && current.every((item, index) => item.id === next[index]?.id && item.timestamp === next[index]?.timestamp) ? current : next);
+        setComponentSnapshots((current) => current.length === componentSnapshots.length && current.every((item, index) => item.id === componentSnapshots[index]?.id && item.timestamp === componentSnapshots[index]?.timestamp) ? current : componentSnapshots);
       }
     };
     void refreshDebug().catch(() => undefined);
@@ -175,6 +179,31 @@ export function App({ devtoolsTabId }: { devtoolsTabId?: number }) {
       setNotice('Picker active on page · press Escape to cancel');
     } catch (error) { setNotice(error instanceof Error ? error.message : 'Element picker could not start.'); }
   }
+  async function captureComponent(element: UIElementRecord, mode: ComponentCaptureMode, padding: number, relatedRequestIds: string[], relatedConsoleIds: string[]): Promise<UIComponentSnapshot> {
+    if (tabId === undefined) throw new Error('The inspected tab is unavailable.');
+    const tab = await chrome.tabs.get(tabId);
+    if (!tab.active) throw new Error('Activate the inspected page tab before capturing its visible screenshot.');
+    const page = new URL(element.page.url);
+    const originPermission = `${page.protocol}//${page.hostname}/*`;
+    if (!await chrome.permissions.contains({ origins: [originPermission] })) throw new Error('Grant site access before capturing a component screenshot.');
+    const viewport = { width: element.viewport?.width ?? element.page.viewportWidth, height: element.viewport?.height ?? element.page.viewportHeight, devicePixelRatio: element.viewport?.devicePixelRatio ?? window.devicePixelRatio ?? 1 };
+    const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, { format: 'png' });
+    const image = new Image(); image.src = dataUrl; await image.decode();
+    const crop = calculateScreenshotCrop({ x: element.bounds.left, y: element.bounds.top, width: element.bounds.width, height: element.bounds.height }, viewport, { width: image.naturalWidth, height: image.naturalHeight }, mode, padding);
+    const cropped = await cropScreenshot(dataUrl, crop);
+    const snapshot = makeComponentSnapshot({
+      id: crypto.randomUUID(), tabId, timestamp: Date.now(), mode, contextPadding: mode === 'context' ? padding : 0,
+      element: { selector: element.selector, tagName: element.tagName, text: element.text?.slice(0, 1000), outerHTML: element.html?.slice(0, 8000) },
+      screenshot: { width: cropped.width, height: cropped.height, mimeType: 'image/png', partial: crop.partial, visibleBounds: crop.visibleBounds },
+      bounds: { x: element.bounds.x, y: element.bounds.y, width: element.bounds.width, height: element.bounds.height }, viewport,
+      styles: element.styles.computed, accessibility: element.accessibility, pageUrl: element.page.url,
+      relatedRequestIds, relatedConsoleIds,
+    }, cropped);
+    await saveComponentSnapshot(snapshot);
+    setComponentSnapshots(await getComponentSnapshots(tabId));
+    setNotice(crop.partial ? 'Visible portion captured; the selected element extends beyond the viewport.' : 'Component snapshot captured');
+    return snapshot;
+  }
   async function stopElementTracking() { if (tabId !== undefined) await chrome.runtime.sendMessage({ type: 'debug:ui:stop', tabId }).catch(() => undefined); }
   async function saveSidebarWidth(value: number) { const next = Math.max(25, Math.min(55, value)); setSidebarWidth(next); await savePreferences({ sidebarWidth: next }); }
   function resizeSidebar(event: PointerEvent<HTMLButtonElement>) {
@@ -223,7 +252,7 @@ export function App({ devtoolsTabId }: { devtoolsTabId?: number }) {
     <section className="main-content" ref={mainContentRef} aria-live="polite">
     <MainContentBoundary>
     {loading && !requests.length ? <div className="main-loading" role="status">Loading captured requests…</div> : storageError && !requests.length ? <div className="storage-failure" role="alert"><strong>Unable to load local request history.</strong><span>The local database could not be read. Your existing data has not been cleared.</span><button className="primary" onClick={() => void refresh()}>Retry</button></div> : <>
-    {mode !== 'network' && <DebugModes mode={mode} records={debugRecords} requests={tabRequests} insights={insights} onPick={() => void startElementPicker()} onStop={() => void stopElementTracking()} onCopy={(value, label) => { if (value) void copy(value, label); else setNotice(label); }} />}
+    {mode !== 'network' && <DebugModes mode={mode} records={debugRecords} requests={tabRequests} insights={insights} componentSnapshots={componentSnapshots} onCaptureComponent={captureComponent} onLoadComponentImage={getComponentScreenshot} onPick={() => void startElementPicker()} onStop={() => void stopElementTracking()} onCopy={(value, label) => { if (value) void copy(value, label); else setNotice(label); }} />}
     {mode === 'network' && <>
     <section className="toolbar"><label className="search-field"><span aria-hidden="true">⌕</span><input aria-label="Search requests" placeholder="Search URL, method, status…" value={query} onChange={(event) => setQuery(event.target.value)} />{query && <button className="clear-search" aria-label="Clear search" onClick={() => setQuery('')}>×</button>}</label><select aria-label="Filter by status" value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}><option value="all">All status</option><option value="2xx">2xx</option><option value="3xx">3xx</option><option value="4xx">4xx</option><option value="5xx">5xx</option></select><select aria-label="Filter by domain" value={domainFilter} onChange={(event) => setDomainFilter(event.target.value)}><option value="">All domains</option>{domains.map((domain) => <option key={domain} value={domain}>{domain}</option>)}</select><button className={`filter-chip ${hasAuthOnly ? 'active' : ''}`} aria-pressed={hasAuthOnly} onClick={() => setHasAuthOnly(!hasAuthOnly)}>Has auth</button><details className="menu sensitive-menu"><summary>{includeSecrets ? 'Sensitive: reveal ▾' : 'Sensitive: mask ▾'}</summary><div className="menu-popover menu-align-right" role="menu"><button role="menuitemradio" aria-checked={!includeSecrets} onClick={(event) => { closeMenu(event); void changeSecrets(false); }}>Mask secrets</button><button role="menuitemradio" aria-checked={includeSecrets} onClick={(event) => { closeMenu(event); void changeSecrets(true); }}>Reveal in copies</button></div></details><details className="menu clear-menu"><summary className="quiet">Clear ▾</summary><div className="menu-popover menu-align-right"><button className="danger-action" onClick={(event) => { closeMenu(event); void clearHistory(); }}>Clear all history</button></div></details></section>
       <section className="workspace" ref={workspaceRef} style={{ '--sidebar-width': `${sidebarWidth}%` } as CSSProperties}><aside className="request-list" aria-label="Captured requests"><div className="list-heading"><strong>Requests</strong><span>{visibleRequests.length} {visibleRequests.length === 1 ? 'request' : 'requests'}</span></div>{loading && !requests.length ? <div className="empty">Loading local history…</div> : visibleRequests.length ? visibleRequests.map((r) => <RequestRow key={r.id} record={r} selected={selected?.id === r.id} onClick={() => select(r.id)} />) : <div className="empty"><strong>No API requests captured yet.</strong><span>{pageHookCapture ? 'Use the app in this tab; fetch and XHR traffic will appear here.' : devtoolsTabId !== undefined || capture ? 'Waiting for API traffic…' : 'Choose “Capture this site” to capture fetch/XHR without opening DevTools.'}</span><small>Traffic stays in this browser unless you explicitly copy or send it.</small></div>}</aside><button className="workspace-splitter" role="separator" aria-orientation="vertical" aria-label="Resize request list" aria-valuemin={25} aria-valuemax={55} aria-valuenow={Math.round(sidebarWidth)} onPointerDown={resizeSidebar} onKeyDown={resizeWithKeyboard} />
