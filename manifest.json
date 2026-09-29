@@ -1,0 +1,11 @@
+{
+  "manifest_version": 3,
+  "name": "API Lens",
+  "version": "0.1.0",
+  "description": "Capture and inspect API requests locally from Chrome.",
+  "minimum_chrome_version": "120",
+  "permissions": ["debugger", "storage", "tabs"],
+  "background": { "service_worker": "assets/service-worker.js", "type": "module" },
+  "action": { "default_title": "API Lens", "default_popup": "popup.html" },
+  "devtools_page": "devtools.html"
+}
