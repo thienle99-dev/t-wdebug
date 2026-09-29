@@ -11,8 +11,9 @@ export interface RequestRecord {
   meta?: { resourceType?: string; initiator?: string; fromCache?: boolean; ip?: string; size?: number; httpVersion?: string; serverIPAddress?: string; connection?: string };
   flags: { failed: boolean; hasAuth: boolean; hasSensitiveData: boolean; pinned: boolean };
 }
-export interface Preferences { captureEnabled: boolean; maxRequests: number; maxBodyBytes: number; includeSecretsInCopy: boolean; redactInAI: boolean; captureStaticAssets: boolean }
-export const DEFAULT_PREFERENCES: Preferences = { captureEnabled: true, maxRequests: 500, maxBodyBytes: 1024 * 1024, includeSecretsInCopy: false, redactInAI: true, captureStaticAssets: false };
+export type AppearanceTheme = 'system' | 'light' | 'dark';
+export interface Preferences { captureEnabled: boolean; maxRequests: number; maxBodyBytes: number; includeSecretsInCopy: boolean; redactInAI: boolean; captureStaticAssets: boolean; theme: AppearanceTheme; sidebarWidth: number }
+export const DEFAULT_PREFERENCES: Preferences = { captureEnabled: true, maxRequests: 500, maxBodyBytes: 1024 * 1024, includeSecretsInCopy: false, redactInAI: true, captureStaticAssets: false, theme: 'system', sidebarWidth: 34 };
 export type CaptureRuntimeMessage =
   | { type: 'capture:heartbeat'; tabId: number; active: boolean }
   | { type: 'capture:status'; tabId: number };
