@@ -187,7 +187,13 @@ export function App({ devtoolsTabId }: { devtoolsTabId?: number }) {
     const originPermission = `${page.protocol}//${page.hostname}/*`;
     if (!await chrome.permissions.contains({ origins: [originPermission] })) throw new Error('Grant site access before capturing a component screenshot.');
     const viewport = { width: element.viewport?.width ?? element.page.viewportWidth, height: element.viewport?.height ?? element.page.viewportHeight, devicePixelRatio: element.viewport?.devicePixelRatio ?? window.devicePixelRatio ?? 1 };
-    const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, { format: 'png' });
+    let dataUrl: string;
+    try { dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, { format: 'png' }); }
+    catch (error) {
+      const message = error instanceof Error ? error.message : '';
+      if (/permission|activeTab|all_urls/i.test(message)) throw new Error('Chrome needs temporary screenshot access. Open Debug Lens from the toolbar on this page, then retry the capture.');
+      throw new Error('Chrome could not capture the visible tab. Confirm the inspected page is active and try again.');
+    }
     const image = new Image(); image.src = dataUrl; await image.decode();
     const crop = calculateScreenshotCrop({ x: element.bounds.left, y: element.bounds.top, width: element.bounds.width, height: element.bounds.height }, viewport, { width: image.naturalWidth, height: image.naturalHeight }, mode, padding);
     const cropped = await cropScreenshot(dataUrl, crop);
