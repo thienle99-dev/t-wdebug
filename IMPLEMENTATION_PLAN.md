@@ -2,29 +2,29 @@
 
 ## Architecture
 
-API Lens is a Manifest V3 extension built with React, TypeScript, Vite, Tailwind CSS, Zustand, IndexedDB, and `chrome.storage.local`. A DevTools-page capture adapter uses `chrome.devtools.network`, normalizes HAR entries into the shared `RequestRecord` model, and writes directly to IndexedDB. The toolbar popup and DevTools panel read the same persisted history.
+API Lens uses a shared `RequestRecord` model and IndexedDB request history. Current-tab page-hook capture works without DevTools: a user starts it from the toolbar, grants optional access to the current HTTP/HTTPS origin, and the service worker injects a MAIN-world `fetch`/XHR interceptor plus an isolated content bridge. When DevTools is open, a DevTools-page adapter also uses `chrome.devtools.network` (`getHAR`, `onRequestFinished`, and `getContent`) to add Chrome Network metadata. Both sources normalize into the shared model and are deduplicated before popup and panel display.
 
-## Browser capture and permissions
+## Permissions and privacy
 
-Live capture works only while Chrome DevTools is open. The DevTools page imports current requests with `getHAR()`, subscribes to `onRequestFinished`, retrieves response content with `getContent()`, deduplicates entries, and persists normalized records. The panel may remain unselected. A service-worker heartbeat lets the popup distinguish active capture from saved history; when DevTools is closed, the popup explains that new traffic is not being captured. The manifest requests only `storage` and no debugger or broad host permissions.
+The MV3 manifest uses `storage`, `scripting`, and `activeTab`; HTTP/HTTPS origin access is optional and requested for the site only after the user starts capture. `devtools_page` registers the deeper inspector. The default capture architecture does not request or call `chrome.debugger` and does not require broad host permissions. Data remains local; AI prompt generation is manual and redacted by default.
+
+## Browser limitations
+
+- Page instrumentation sees JavaScript `fetch` and XHR, but not all browser-generated headers or raw Cookie headers. Calls made from a site's own service worker, other protocols, protected Chrome pages, and some iframe contexts are outside its reliable coverage.
+- Hooks are installed after the user enables capture, so earlier traffic is not recovered. Same-origin navigation/reload triggers reinjection at load start/completion, though the earliest requests can be missed.
+- DevTools Network capture is available only while DevTools is open. Its HAR data can add wire-level metadata and response content when Chrome retains it.
+- Bodies are limited to 1 MB; streaming/SSE and binary data are omitted. Some request/response bodies may be unavailable from browser APIs.
 
 ## Product milestones
 
-1. Scaffold the MV3 extension and shared request types, preferences, and IndexedDB history.
-2. Capture HAR data from the DevTools page, normalize request/response metadata and text bodies, enforce size caps, mark secrets, and retain pinned history during cleanup.
-3. Add popup and DevTools history/details over the shared data layer, with quick copy, safe cURL, request/response copy, pin/delete, and clear history.
-4. Add cURL, fetch, Axios, Python requests, Postman item JSON, debug bundle, safe Markdown, and manual AI prompt generation. AI context is redacted by default and is never sent automatically.
-5. Add request editing/retry and original-versus-retry diffs only after capture/copy/export are stable. Session grouping and dependency detection remain later extensions.
+1. Manifest V3 scaffold, shared model, preferences, and IndexedDB history.
+2. DevTools HAR capture, normalization, body limits, secret marking, and dedupe.
+3. Toolbar popup and DevTools inspection panel over shared history.
+4. cURL, fetch, Axios, Python requests, Postman, safe bundles, and manual AI prompt generation.
+5. Current-tab MAIN-world fetch/XHR capture behind per-site optional permissions, normalized into shared history.
+6. MIME-aware response viewer with JSON tree/code/raw modes, search, JSON paths, and bounded rendering.
+7. Future: retry, request/response diff, sessions, and dependency detection after capture/copy/export are stable.
 
 ## Acceptance and verification
 
-- `npm install`, `npm run typecheck`, `npm run build`, and `npm test` complete successfully.
-- Load `dist/` unpacked in Chrome; verify automatic capture only while DevTools is open, popup and DevTools panel, authenticated request inspection, secret-redacted copies, Postman JSON, and history after DevTools closes.
-- Verify initial HAR import, live event capture, duplicate suppression, page reload, empty/malformed JSON, 204 responses, binary responses, and oversized bodies.
-
-## Assumptions and limits
-
-- Capture starts automatically for the inspected tab while DevTools is open; the default body cap is 1 MB and the history cap is 500 records.
-- This MVP has manual AI prompt copy only. No traffic is transmitted to an AI service automatically.
-- `chrome.devtools.network` is unavailable outside a DevTools extension page. No requests are captured while DevTools is closed; Chrome may omit request bodies or evict response content from HAR.
-- Sensitive values remain stored locally for the configured history lifetime. Copy controls redact by default; the user may enable secret inclusion for intentional local copies.
+Run `npm install`, `npm run typecheck`, `npm test`, `npm run check:capture-architecture`, and `npm run build`. In Chrome, validate opt-in site capture, fetch/XHR bodies, the DevTools panel, history persistence, no debugger warning, permissions, safe copy, Postman export, reload behavior, and the capture-paused status after DevTools closes.

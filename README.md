@@ -1,18 +1,16 @@
 # API Lens
 
-API Lens is a local-first Chrome extension for capturing and inspecting authenticated API traffic. Chrome DevTools owns live capture; the toolbar popup and API Lens DevTools panel read the same persisted request history.
+API Lens is a local-first Chrome extension for capturing and debugging HTTP API traffic. Start capture from the toolbar for the current site without opening DevTools, or open DevTools for richer Chrome Network metadata. The popup and DevTools panel use the same normalized request history.
 
 ## Features
 
-- Automatic API traffic capture through `chrome.devtools.network` while Chrome DevTools is open.
-- Imports current requests with `getHAR()` and captures completed requests with `onRequestFinished` / `getContent()`.
-- Shared request history for the popup and DevTools panel, stored in local IndexedDB.
-- Request and response headers, bodies, timing, failure details, pinning, and deletion.
+- Current-tab `fetch` and `XMLHttpRequest` capture through a MAIN-world page hook.
+- Optional enhanced capture through `chrome.devtools.network` while DevTools is open, including current HAR entries and response content when Chrome provides it.
+- Request/response headers and bodies, status, timing, authentication hints, secret detection, and local IndexedDB history.
+- Response body viewer with MIME detection, JSON tree/code/raw modes, formatting, search, wrapping, copy, JSON paths, and bounded rendering.
 - Copy and export as cURL, fetch, Axios, Python `requests`, Postman item JSON, debug bundle, Markdown report, or plain request/response text.
-- Secret detection and redacted copy output by default, including AI prompt text for manual use.
-- Local preferences for capture behavior, history size, body limits, appearance, and DevTools request-list width.
-
-No backend or automatic AI transmission is used.
+- Redacted copy actions and manual AI prompt generation. API Lens does not send data to an AI provider.
+- Shared light/dark/system appearance preference for popup and DevTools panel.
 
 ## Requirements
 
@@ -20,76 +18,75 @@ No backend or automatic AI transmission is used.
 - npm
 - Google Chrome 120 or newer
 
-## Development
-
-Install dependencies and build the extension:
+## Development and build
 
 ```sh
 npm install
 npm run build
 ```
 
-Available commands:
+Commands:
 
 ```sh
 npm run dev        # Start the Vite development server
-npm run build      # Type-check and build the extension into dist/
-npm test           # Run the Vitest suite
-npm run test:watch # Run tests in watch mode
-npm run typecheck  # Run TypeScript project checks
-npm run check:capture-architecture # Assert DevTools Network is the only default capture path
+npm run build      # Type-check and build into dist/
+npm test           # Run Vitest
+npm run typecheck  # Run TypeScript checks
+npm run check:capture-architecture # Verify the capture paths and no debugger usage
 ```
 
-To load the built extension, open `chrome://extensions`, enable **Developer mode**, select **Load unpacked**, and choose the `dist/` directory. Open the target page and its Chrome DevTools once; API Lens starts capturing automatically from the DevTools page. The API Lens panel does not need to be selected. Use the toolbar popup for quick actions or open the API Lens panel for inspection.
+To load locally, open `chrome://extensions`, enable **Developer mode**, select **Load unpacked**, and choose `dist/`. Open a normal HTTP/HTTPS page, click API Lens, then choose **Capture this site**. Chrome asks for access to that site before the hook is injected. You can later stop capture from the popup. The hook follows same-origin navigations in that tab while capture is enabled. For deeper inspection, open Chrome DevTools and select the **API Lens** panel; DevTools capture does not require the panel to stay selected.
 
 ## Download a ZIP from GitHub Actions
 
-Every push and pull request runs the build and uploads a ZIP artifact named `api-lens-v<version>-YYYYMMDD-HHmmss`, for example `api-lens-v0.1.0-20260929-043015`. The timestamp uses UTC and includes year, month, day, hour, minute, and second. Open the completed workflow run on GitHub and download the artifact with that name. Extract the ZIP once; its root contains `manifest.json`. Then open `chrome://extensions`, enable **Developer mode**, choose **Load unpacked**, and select the extracted directory. Chrome's **Load unpacked** flow needs the extracted folder; it does not install the ZIP directly. Artifacts are retained for 30 days.
+Push and pull-request workflows build a ZIP artifact named `api-lens-v<version>-YYYYMMDD-HHmmss`, for example `api-lens-v0.1.0-20260929-043015`. The timestamp is UTC. Download the artifact from the completed GitHub Actions run, extract it once, then choose the extracted folder in **Load unpacked**. The ZIP root contains `manifest.json`; Chrome does not install this ZIP directly. Artifacts are retained for 30 days.
 
 ## Architecture
 
 ```text
-Page traffic → Chrome DevTools → chrome.devtools.network
-                                      ↓
-                         capture adapter → HAR normalizer
-                                      ↓
-                         IndexedDB RequestRecord
-                              ↙             ↘
-                     Toolbar popup     DevTools panel
-                              ↑
-                 service worker heartbeat
+Page fetch/XHR
+   ↓ MAIN-world hook
+Isolated content bridge → service worker → normalizer → IndexedDB
+                                                  ↙          ↘
+                                         Toolbar popup   DevTools panel
+Chrome DevTools Network ── getHAR/onRequestFinished ────────↑
 ```
 
-The DevTools page owns capture, imports the current HAR, listens for completed requests, reads response content, normalizes records, and writes directly to shared IndexedDB. The background service worker tracks an expiring DevTools heartbeat so the popup can report whether live capture is available. Shared core modules provide formatters and secret handling; the popup and panel use the same request store.
+The page hook is scoped to the current tab and is injected only after the user chooses **Capture this site** and grants optional access to that origin. It observes JavaScript `fetch` and XHR calls, including request and readable response bodies, without consuming the application's response stream. The isolated content bridge forwards bounded capture messages to the service worker, which validates the sender/session and stores normalized `RequestRecord` values in IndexedDB. DevTools capture enriches the same store with Chrome Network metadata and deduplicates matching hook records.
+
+## Permissions and privacy
+
+- `storage`: preferences and short-lived capture-session state.
+- `scripting`: inject the isolated bridge and MAIN-world hook into the selected tab after user action.
+- `activeTab`: identify the current tab in the user-invoked popup.
+- `optional_host_permissions` for HTTP/HTTPS: requested per site only when the user starts capture.
+- `devtools_page`: register the API Lens panel; `chrome.devtools.network` is available only in that DevTools extension context.
+
+The extension does not request `debugger` permission and does not use `chrome.debugger`. Captured request data, which may contain secrets, stays in local IndexedDB until retention cleanup or user deletion. It is never uploaded automatically. The AI feature creates a redacted prompt for manual copy; it makes no AI network calls. Sensitive values are masked in the interface and redacted in safe copy output by default; the Sensitive menu lets the user intentionally include them in local copies.
+
+## Capture behavior and limitations
+
+- Page-hook capture does not require F12/DevTools, but it starts only after the user grants access and enables capture for the current tab/site. It does not retroactively capture requests made before the hook starts.
+- On navigation/reload the service worker attempts reinjection as the tab starts and completes loading. The hook resumes after a same-origin navigation, but requests that happen before injection completes can be missed.
+- The page hook captures JavaScript-visible fetch/XHR traffic. It cannot read browser-managed `Cookie` request headers, and browser-generated headers such as `Origin`, `Referer`, `Sec-Fetch-*`, or `User-Agent` may be absent. `credentials` is retained when exposed. DevTools capture can provide additional network metadata while DevTools is open.
+- Calls made internally by a website service worker, traffic from inaccessible/protected Chrome pages, and non-fetch/XHR protocols are not reliably visible to the page hook. Cross-origin iframe coverage is not enabled by default.
+- Streaming/SSE and binary bodies are omitted. Request/response bodies are capped at 1 MB; truncated bodies are marked. Browser APIs and page response types can make some bodies unavailable.
+- `chrome.devtools.network` capture is active only while DevTools is open. Existing history remains available from the popup after DevTools closes.
+- Chrome's optional site-access prompt and protected-page restrictions apply. No broad host permission is enabled by default.
+- AI support is manual prompt copy only. Retry, session capture, advanced dependency detection, and environment export are not implemented.
 
 ## Screenshots
 
 - Toolbar popup: _screenshot placeholder_
 - DevTools API Lens panel: _screenshot placeholder_
 
-## Permissions and privacy
+## Manual validation
 
-- `storage`: stores local preferences and short-lived DevTools capture heartbeats.
-- `devtools_page`: registers the API Lens panel in Chrome DevTools.
-
-Captured traffic can include authentication values and is stored in the browser's local IndexedDB, subject to the configured history limit or user deletion. Nothing is sent to an external server automatically. The AI prompt feature generates redacted text for manual copying; it does not call an AI service. Enable secret inclusion only when you intentionally want sensitive values in a local copy.
-
-The popup and DevTools panel share the saved System/Light/Dark appearance preference. The DevTools panel also remembers its draggable request-list width. The Sensitive menu controls whether detected secret values are included in local copy actions; AI prompts remain redacted.
-
-## AI prompt workflow
-
-Choose **AI prompt (redacted)** in the **Copy as** selector and press **Copy** to copy a structured prompt into ChatGPT, Claude, Cursor, or another assistant yourself. This MVP has no provider API key or endpoint settings and makes no AI network requests.
-
-## Limitations
-
-- Live capture is available only while DevTools is open. Closing DevTools stops new capture; the popup keeps showing saved history and indicates that live capture is unavailable. Reopening DevTools resumes capture automatically.
-- Chrome may omit request bodies or evict response content from HAR. Binary and oversized bodies are not fully retained.
-- AI support is limited to manually copying a generated prompt. Request retry, response diffing, session capture, environment export, and advanced filtering are not currently implemented.
-
-## Manual capture check
-
-1. Load `dist/` unpacked and open a web app.
-2. Open Chrome DevTools and trigger API traffic. Confirm API Lens records requests without a debugger warning; the API Lens panel does not need to be selected.
-3. Inspect response bodies and headers, then try copy and Postman export.
-4. Close DevTools. Open the toolbar popup and confirm saved history remains while it says **Live capture unavailable**.
-5. Reopen DevTools and confirm capture resumes.
+1. Build and load `dist/` unpacked in Chrome.
+2. Open a normal web app and choose **Capture this site** in the popup; grant the site permission.
+3. Trigger fetch and XHR calls. Verify request/response content appears in the popup without a debugger banner.
+4. Inspect JSON and raw response modes; copy cURL and export a Postman request.
+5. Reload/navigate within the same origin and verify capture resumes; note that the earliest navigation requests may be missed.
+6. Open DevTools and the API Lens panel. Verify Chrome Network metadata enriches history; switch to another DevTools tab while checking that capture persists.
+7. Close DevTools. The popup should continue to show saved history and indicate that DevTools capture is unavailable; page-hook capture remains active if enabled.
+8. Stop site capture and verify new page-hook requests stop while saved history remains.

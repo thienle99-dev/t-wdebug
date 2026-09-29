@@ -2,7 +2,7 @@
 set -euo pipefail
 
 manifests=(manifest.json public/manifest.json)
-capture_sources=(src/background src/core/capture src/devtools)
+capture_sources=(src)
 
 if grep -q '"debugger"' "${manifests[@]}"; then
   echo 'The default manifest must not request debugger permission.' >&2
@@ -28,5 +28,15 @@ for manifest in "${manifests[@]}"; do
     exit 1
   fi
 done
+
+if ! grep -q '"scripting"' manifest.json || ! grep -q '"activeTab"' manifest.json || ! grep -q '"optional_host_permissions"' manifest.json; then
+  echo 'Page-hook capture must use scripting, activeTab, and optional site access.' >&2
+  exit 1
+fi
+
+if grep -R -nE 'chrome\.debugger|Network\.enable|Network\.getResponseBody' src; then
+  echo 'The extension must not use debugger/CDP capture APIs.' >&2
+  exit 1
+fi
 
 echo 'Capture architecture check passed.'

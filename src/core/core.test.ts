@@ -3,7 +3,9 @@ import { demoRequests } from './fixtures';
 import { toAIPrompt, toCurl, toFetch, toAxios, toPythonRequests, toPostman, toRawHttp } from './formatters';
 import { detectSecret, redactRecord } from './secrets';
 import { formatBody } from './body-format';
+import { countJsonNodes, detectBodyLanguage, formatViewerText, toJsonPath } from './body-viewer';
 import { createHarDedupeKey, normalizeHarEntry, shouldCaptureHarEntry } from './capture/devtools-network';
+import { normalizePageHookCapture } from './capture/page-hook';
 
 describe('response body formatting', () => {
   it('pretty-prints valid JSON and preserves the raw representation', () => {
@@ -15,6 +17,71 @@ describe('response body formatting', () => {
     expect(formatBody('{"unfinished":', 'pretty')).toBe('{"unfinished":');
     expect(formatBody('not JSON\nplain text', 'pretty')).toBe('not JSON\nplain text');
     expect(formatBody(undefined, 'pretty')).toBe('');
+  });
+});
+
+describe('MIME-aware body viewer', () => {
+  it('detects JSON, GraphQL, HTML, XML, CSS, JavaScript, text, and raw content', () => {
+    expect(detectBodyLanguage('application/problem+json; charset=utf-8', '{}').language).toBe('json');
+    expect(detectBodyLanguage('application/json', '{}', true).label).toBe('GraphQL · JSON');
+    expect(detectBodyLanguage('text/html', '<html></html>').language).toBe('html');
+    expect(detectBodyLanguage('application/soap+xml', '<Envelope/>').language).toBe('xml');
+    expect(detectBodyLanguage('text/css', 'body{}').language).toBe('css');
+    expect(detectBodyLanguage('application/javascript', 'const ok=true').language).toBe('javascript');
+    expect(detectBodyLanguage('text/plain', 'hello').language).toBe('text');
+    expect(detectBodyLanguage(undefined, '{"ok":true}').language).toBe('json');
+    expect(detectBodyLanguage(undefined, 'opaque payload').label).toBe('Raw');
+  });
+  it('formats valid JSON and markup while preserving malformed or raw bodies', () => {
+    expect(formatViewerText('{"ok":true}', 'json', true)).toBe(`{
+  "ok": true
+}`);
+    expect(formatViewerText('{bad', 'json', true)).toBe('{bad');
+    expect(formatViewerText('<root><item>one</item></root>', 'xml', true)).toContain('\n  <item>');
+    expect(formatViewerText('let x=1', 'javascript', true)).toBe('let x=1');
+    expect(formatViewerText('<root/>', 'xml', false)).toBe('<root/>');
+  });
+  it('bounds JSON tree inspection and produces correct JSON paths', () => {
+    expect(countJsonNodes({ a: [1, 2] })).toBe(4);
+    expect(countJsonNodes(Array.from({ length: 5000 }, (_, index) => index), 100)).toBe(100);
+    expect(toJsonPath('$.items', 0)).toBe('$.items[0]');
+    expect(toJsonPath('$', '123')).toBe('$["123"]');
+    expect(toJsonPath('$', 'user-name')).toBe('$["user-name"]');
+  });
+});
+
+describe('page hook normalization', () => {
+  it('normalizes fetch/XHR payloads, authentication, JSON bodies, and failures', () => {
+    const record = normalizePageHookCapture({
+      source: 'fetch-hook', timestamp: 10_000, pageUrl: 'https://app.test/orders',
+      request: { method: 'POST', url: 'https://api.test/checkout?retry=1', headers: { Authorization: 'Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.c2lnbmF0dXJl' , 'content-type': 'application/json' }, body: '{"order":42}', credentials: 'include' },
+      response: { status: 401, statusText: 'Unauthorized', headers: { 'content-type': 'application/json' }, body: '{"error":"expired"}', mimeType: 'application/json' },
+      timing: { total: 142 },
+    }, 8, 'https://app.test/orders');
+    expect(record?.source).toBe('fetch-hook');
+    expect(record?.tabId).toBe(8);
+    expect(record?.request.auth?.type).toBe('jwt');
+    expect(record?.request.query).toEqual({ retry: '1' });
+    expect(record?.request.body?.json).toEqual({ order: 42 });
+    expect(record?.request.credentials).toBe('include');
+    expect(record?.response.body?.json).toEqual({ error: 'expired' });
+    expect(record?.flags.failed).toBe(true);
+    expect(record?.flags.hasSensitiveData).toBe(true);
+    expect(record?.timing?.total).toBe(142);
+  });
+  it('marks omitted binary bodies and rejects non-HTTP URLs', () => {
+    const binary = normalizePageHookCapture({ source: 'xhr-hook', timestamp: Date.now(), request: { method: 'GET', url: 'https://api.test/file', headers: {} }, response: { status: 200, headers: {}, mimeType: 'application/octet-stream', body: 'ignored' } }, 2);
+    expect(binary?.response.body?.unavailableReason).toBe('Binary response body omitted.');
+    expect(normalizePageHookCapture({ source: 'fetch-hook', timestamp: Date.now(), request: { method: 'GET', url: 'chrome://settings', headers: {} }, response: { status: 200 } }, 2)).toBeUndefined();
+  });
+  it('enforces the one-megabyte body limit by UTF-8 bytes', () => {
+    const record = normalizePageHookCapture({
+      source: 'fetch-hook', timestamp: Date.now(),
+      request: { method: 'POST', url: 'https://api.test/items', headers: { 'content-type': 'text/plain' }, body: 'é'.repeat(600_000) },
+      response: { status: 200 },
+    }, 7);
+    expect(record?.request.body?.truncated).toBe(true);
+    expect(new TextEncoder().encode(record?.request.body?.text ?? '').byteLength).toBeLessThanOrEqual(1024 * 1024);
   });
 });
 

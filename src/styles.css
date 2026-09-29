@@ -69,7 +69,9 @@ select { min-width: 0; max-width: 190px; min-height: 30px; border: 1px solid var
 .capture-state.on { color: var(--success); }
 .capture-state.on i { background: var(--success); box-shadow: 0 0 0 3px color-mix(in srgb, var(--success) 16%, transparent); }
 .theme-control select { min-height: 26px; max-width: 116px; padding-block: 2px; font-size: 10px; }
-.capture-hint { display: flex; padding: 5px 12px; color: var(--text-secondary); background: var(--bg-panel); border-bottom: 1px solid var(--border); font-size: 10px; }
+.capture-hint { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 5px 12px; color: var(--text-secondary); background: var(--bg-panel); border-bottom: 1px solid var(--border); font-size: 10px; }
+.capture-hint span { min-width: 0; line-height: 1.4; }
+.capture-hint button { min-height: 27px; font-size: 10px; }
 .toolbar { min-height: 43px; display: flex; align-items: center; gap: 7px; padding: 6px 9px; border-bottom: 1px solid var(--border); }
 .search-field { min-width: 115px; flex: 1; height: 30px; display: flex; align-items: center; gap: 6px; padding: 0 8px; color: var(--text-muted); background: var(--bg-input); border: 1px solid var(--border); border-radius: 5px; }
 .search-field > span { font-size: 16px; line-height: 1; }
