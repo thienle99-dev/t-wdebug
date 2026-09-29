@@ -10,7 +10,7 @@ API Lens is a local-first Chrome extension for capturing and inspecting authenti
 - Request and response headers, bodies, timing, failure details, pinning, and deletion.
 - Copy and export as cURL, fetch, Axios, Python `requests`, Postman item JSON, debug bundle, Markdown report, or plain request/response text.
 - Secret detection and redacted copy output by default, including AI prompt text for manual use.
-- Local preferences for capture behavior, history size, and body limits.
+- Local preferences for capture behavior, history size, body limits, appearance, and DevTools request-list width.
 
 No backend or automatic AI transmission is used.
 
@@ -73,6 +73,8 @@ The DevTools page owns capture, imports the current HAR, listens for completed r
 - `devtools_page`: registers the API Lens panel in Chrome DevTools.
 
 Captured traffic can include authentication values and is stored in the browser's local IndexedDB, subject to the configured history limit or user deletion. Nothing is sent to an external server automatically. The AI prompt feature generates redacted text for manual copying; it does not call an AI service. Enable secret inclusion only when you intentionally want sensitive values in a local copy.
+
+The popup and DevTools panel share the saved System/Light/Dark appearance preference. The DevTools panel also remembers its draggable request-list width. The Sensitive menu controls whether detected secret values are included in local copy actions; AI prompts remain redacted.
 
 ## AI prompt workflow
 
