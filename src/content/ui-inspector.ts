@@ -116,6 +116,7 @@ if (!window.__DEBUG_LENS_UI_INSPECTOR__) {
       selector: selectorFor(element), display: style.display, position: style.position, visibility: style.visibility, opacity: Number(style.opacity),
       width: rect.width, height: rect.height, viewportWidth: width, viewportHeight: height, documentWidth: document.documentElement.scrollWidth,
       parentSelector: parent ? selectorFor(parent) : undefined, parentDisplay: parentStyle?.display, parentWidth: parentRect?.width,
+      contentOverflows: element.scrollWidth > element.clientWidth + 1 || element.scrollHeight > element.clientHeight + 1,
       parentOverflowX: parentStyle?.overflowX, parentOverflowY: parentStyle?.overflowY, inViewport, clippingSelector: clipping ? selectorFor(clipping) : undefined,
       hiddenBy: hiddenBy.map(selectorFor), coveringSelector: overlayCoverage ? selectorFor(overlayCoverage.element) : undefined,
       coveredSamples: overlayCoverage?.coveredSamples ?? 0, testedSamples: overlayCoverage?.testedSamples ?? 0,
@@ -148,8 +149,10 @@ if (!window.__DEBUG_LENS_UI_INSPECTOR__) {
   }
   function clippingAncestor(element: Element, rect: DOMRect): Element | undefined {
     for (let parent = element.parentElement; parent; parent = parent.parentElement) {
-      const css = getComputedStyle(parent); if (!/(hidden|clip|auto|scroll)/.test(`${css.overflowX} ${css.overflowY}`)) continue;
-      const box = parent.getBoundingClientRect(); if (rect.left < box.left || rect.right > box.right || rect.top < box.top || rect.bottom > box.bottom) return parent;
+      const css = getComputedStyle(parent); const box = parent.getBoundingClientRect();
+      const clipsX = /(hidden|clip|auto|scroll)/.test(css.overflowX) && (rect.left < box.left || rect.right > box.right);
+      const clipsY = /(hidden|clip|auto|scroll)/.test(css.overflowY) && (rect.top < box.top || rect.bottom > box.bottom);
+      if (clipsX || clipsY) return parent;
     }
     return undefined;
   }

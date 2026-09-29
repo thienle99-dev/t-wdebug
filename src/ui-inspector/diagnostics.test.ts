@@ -21,7 +21,7 @@ describe('UI layout diagnostics', () => {
 
   it('detects flex, grid, sticky, fixed-containing-block, and overflow conditions', () => {
     const titles = evaluateLayoutDiagnostics({
-      ...base, width: 500, parentWidth: 300, parentDisplay: 'flex', parentSelector: '.row', minWidthAuto: true,
+      ...base, width: 500, parentWidth: 300, parentDisplay: 'flex', parentSelector: '.row', minWidthAuto: true, contentOverflows: true,
       flexShrink: '1', documentWidth: 1400, viewportWidth: 1280, position: 'sticky', scrollAncestorSelectors: ['.inner', '.page'],
     }).map((item) => item.title);
     expect(titles).toContain('Element overflows its parent horizontally');

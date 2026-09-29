@@ -12,6 +12,7 @@ export interface LayoutDiagnosticFacts {
   parentSelector?: string;
   parentDisplay?: string;
   parentWidth?: number;
+  contentOverflows?: boolean;
   parentOverflowX?: string;
   parentOverflowY?: string;
   inViewport: boolean;
@@ -57,12 +58,11 @@ export function evaluateLayoutDiagnostics(facts: LayoutDiagnosticFacts): UIDiagn
   if (facts.interactive && !facts.accessibleName) output.push(warning('Interactive element has no accessible name', facts.selector));
   if (facts.parentWidth !== undefined && facts.width > facts.parentWidth + 1) output.push(warning('Element overflows its parent horizontally', `${Math.round(facts.width)}px element · ${Math.round(facts.parentWidth)}px parent`));
   if (facts.documentWidth > facts.viewportWidth + 1) output.push(warning('Page has horizontal overflow', `${facts.documentWidth}px document · ${facts.viewportWidth}px viewport`));
-  if (facts.minWidth !== '0px' && facts.minWidth !== '0' && facts.minWidth !== 'auto' && facts.parentDisplay?.includes('flex') && facts.width > (facts.parentWidth ?? facts.width)) output.push(warning('Possible flex minimum-size constraint', `min-width:${facts.minWidth}; parent ${facts.parentDisplay}`));
   if (facts.parentDisplay === 'flex' || facts.parentDisplay === 'inline-flex') {
-    if (facts.minWidthAuto && facts.width > (facts.parentWidth ?? facts.width)) output.push(warning('Possible flex min-width:auto issue', 'The item may refuse to shrink below its content size'));
+    if (facts.minWidthAuto && facts.contentOverflows) output.push(warning('Possible flex min-width:auto issue', 'The item has min-width:auto and its scroll width exceeds its client width; it may refuse to shrink below its content size'));
     if (facts.flexShrink === '1' && facts.parentWidth !== undefined && facts.width < facts.parentWidth) output.push({ severity: 'info', title: 'Flex item may be shrinking', evidence: `flex-shrink:1 · parent ${Math.round(facts.parentWidth)}px` });
   }
-  if ((facts.parentDisplay === 'grid' || facts.parentDisplay === 'inline-grid') && facts.parentWidth !== undefined && facts.width > facts.parentWidth + 1) output.push(warning('Possible grid overflow', `${facts.width}px item exceeds ${facts.parentWidth}px grid container${facts.gridColumns ? ` · columns ${facts.gridColumns}` : ''}`));
+  if ((facts.parentDisplay === 'grid' || facts.parentDisplay === 'inline-grid') && (facts.parentWidth !== undefined && facts.width > facts.parentWidth + 1 || facts.contentOverflows)) output.push(warning('Possible grid overflow', `${facts.width}px item${facts.parentWidth !== undefined ? ` in ${facts.parentWidth}px container` : ''}${facts.contentOverflows ? ' has overflowing content' : ''}${facts.gridColumns ? ` · columns ${facts.gridColumns}` : ''}`));
   if (facts.position === 'sticky' && facts.stickyTop === 'auto' && facts.stickyBottom === 'auto') output.push(warning('Sticky positioning has no inset', 'Both top and bottom are auto; sticky may not engage on this axis'));
   if (facts.position === 'sticky' && facts.scrollAncestorSelectors.length > 1) output.push({ severity: 'info', title: 'Sticky uses a nested scroll chain', evidence: facts.scrollAncestorSelectors.join(' → ') });
   if (facts.position === 'fixed' && facts.fixedContainingBlock) output.push(warning('Fixed positioning is scoped by an ancestor', `${facts.fixedContainingBlock} establishes a fixed-position containing block`));
