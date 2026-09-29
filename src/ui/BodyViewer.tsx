@@ -111,7 +111,7 @@ function VirtualCode({ text, language, search, wrap }: { text: string; language:
   const last = Math.min(lines.length, lineAtOffset(offsets, viewport.top + viewport.height) + 6);
   const totalHeight = offsets[offsets.length - 1] ?? 19;
   const content = lines.slice(first, last);
-  return <div className={`code-viewport ${wrap ? 'wrapped' : ''}`} ref={viewportRef} onScroll={(event) => setViewport((current) => ({ ...current, top: event.currentTarget.scrollTop }))}>
+  return <div className={`code-viewport ${wrap ? 'wrapped' : ''}`} ref={viewportRef} onScroll={(event) => { const top = event.currentTarget.scrollTop; setViewport((current) => ({ ...current, top })); }}>
     <div className="code-spacer" style={{ height: `${Math.max(19, totalHeight)}px` }}><div className="virtual-code-lines" style={{ transform: `translateY(${offsets[first] ?? 0}px)` }}>
       {content.map((line, relativeIndex) => {
         const lineNumber = first + relativeIndex + 1;
