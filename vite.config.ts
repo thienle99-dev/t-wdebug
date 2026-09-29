@@ -1,17 +1,17 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
-import { resolve } from 'node:path';
+import tailwindcss from '@tailwindcss/vite';
 
 export default defineConfig({
-  plugins: [react()],
+  plugins: [react(), tailwindcss()],
   base: './',
   build: {
     rollupOptions: {
       input: {
-        popup: resolve(__dirname, 'popup.html'),
-        panel: resolve(__dirname, 'panel.html'),
-        devtools: resolve(__dirname, 'devtools.html'),
-        'service-worker': resolve(__dirname, 'src/background/service-worker.ts'),
+        popup: 'popup.html',
+        panel: 'panel.html',
+        devtools: 'devtools.html',
+        'service-worker': 'src/background/service-worker.ts',
       },
       output: {
         entryFileNames: (chunk) => chunk.name === 'service-worker' ? 'assets/service-worker.js' : 'assets/[name]-[hash].js',

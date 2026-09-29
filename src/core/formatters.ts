@@ -7,30 +7,48 @@ function headersObject(headers: HeaderEntry[]): Record<string, string> { return 
 export function toDebugBundle(record: RequestRecord, includeSecrets = false) { const item = prepared(record, includeSecrets); return { version: 1, capturedAt: new Date(item.timestamp).toISOString(), page: item.page, request: item.request, response: item.response, timing: item.timing, meta: item.meta, flags: item.flags }; }
 export function toFullDebug(record: RequestRecord, includeSecrets = false): string {
   const r = prepared(record, includeSecrets);
-  return [`${r.request.method} ${r.request.url}`, '', 'PAGE', r.page.url ?? '(unknown)', '', 'STATUS', `${r.response.status} ${r.response.statusText ?? ''}`.trim(), '', 'REQUEST HEADERS', ...r.request.headers.map((h) => `${h.name}: ${h.value}`), '', 'REQUEST BODY', pretty(bodyValue(r)), '', 'RESPONSE HEADERS', ...r.response.headers.map((h) => `${h.name}: ${h.value}`), '', 'RESPONSE BODY', r.response.body?.text ?? pretty(r.response.body?.json) ?? r.response.body?.unavailableReason ?? '(empty)', '', 'TIMING', `Total: ${r.timing?.total ?? 'unknown'} ms`].join('\n');
+  return [`${r.request.method} ${r.request.url}`, '', 'PAGE', r.page.url ?? '(unknown)', '', 'STATUS', `${r.response.status} ${r.response.statusText ?? ''}`.trim(), '', 'REQUEST HEADERS', ...r.request.headers.map((h) => `${h.name}: ${h.value}`), '', 'REQUEST BODY', pretty(bodyValue(r)), '', 'RESPONSE HEADERS', ...r.response.headers.map((h) => `${h.name}: ${h.value}`), '', 'RESPONSE BODY', r.response.body?.text ?? (r.response.body?.json !== undefined ? pretty(r.response.body.json) : r.response.body?.unavailableReason ?? '(empty)'), '', 'TIMING', `Total: ${r.timing?.total ?? 'unknown'} ms`].join('\n');
 }
 function pretty(value: unknown): string { return value === undefined ? '(empty)' : typeof value === 'string' ? value : JSON.stringify(value, null, 2); }
 function shellQuote(value: string): string { return `'${value.replaceAll("'", "'\\''")}'`; }
-export function toCurl(record: RequestRecord, includeSecrets = true): string {
+export function toCurl(record: RequestRecord, includeSecrets = false): string {
   const r = prepared(record, includeSecrets); const lines = [`curl ${shellQuote(r.request.url)}`, `  -X ${shellQuote(r.request.method)}`];
   for (const { name, value } of r.request.headers) lines.push(`  -H ${shellQuote(`${name}: ${value}`)}`);
   const body = r.request.body?.text;
   if (body && !['GET', 'HEAD'].includes(r.request.method)) lines.push(`  --data-raw ${shellQuote(body)}`);
   return lines.join(' \\\n');
 }
-export function toFetch(record: RequestRecord, includeSecrets = true): string {
+export function toFetch(record: RequestRecord, includeSecrets = false): string {
   const r = prepared(record, includeSecrets); const options: Record<string, unknown> = { method: r.request.method, headers: headersObject(r.request.headers) };
   if (r.request.body?.text && !['GET', 'HEAD'].includes(r.request.method)) options.body = r.request.body.text;
   return `fetch(${JSON.stringify(r.request.url)}, ${JSON.stringify(options, null, 2)});`;
 }
-export function toAxios(record: RequestRecord, includeSecrets = true): string {
+export function toRawHttp(record: RequestRecord, includeSecrets = false): string {
+  const r = prepared(record, includeSecrets); const url = new URL(r.request.url);
+  const headers = [...r.request.headers];
+  if (!headers.some((header) => /^host$/i.test(header.name))) headers.unshift({ name: 'Host', value: url.host });
+  const body = r.request.body?.text;
+  if (body && !headers.some((header) => /^content-length$/i.test(header.name))) headers.push({ name: 'Content-Length', value: String(new TextEncoder().encode(body).byteLength) });
+  return [`${r.request.method} ${url.pathname}${url.search} HTTP/1.1`, ...headers.map(({ name, value }) => `${name}: ${value}`), '', body ?? ''].join('\r\n');
+}
+export function toAxios(record: RequestRecord, includeSecrets = false): string {
   const r = prepared(record, includeSecrets); const body = bodyValue(r); const config = { headers: headersObject(r.request.headers) };
   return `await axios.request({\n  method: ${JSON.stringify(r.request.method.toLowerCase())},\n  url: ${JSON.stringify(r.request.url)},${body === undefined ? '' : `\n  data: ${JSON.stringify(body, null, 2).replaceAll('\n', '\n  ')},`}\n  ...${JSON.stringify(config, null, 2).replaceAll('\n', '\n  ')}\n});`;
 }
-export function toPythonRequests(record: RequestRecord, includeSecrets = true): string {
-  const r = prepared(record, includeSecrets); const body = bodyValue(r); const lines = ['import requests', '', 'response = requests.request(', `    ${JSON.stringify(r.request.method)},`, `    ${JSON.stringify(r.request.url)},`, `    headers=${JSON.stringify(headersObject(r.request.headers), null, 4).replaceAll('\n', '\n    ')},`];
-  if (body !== undefined) lines.push(`    json=${JSON.stringify(body, null, 4).replaceAll('\n', '\n    ')},`);
+export function toPythonRequests(record: RequestRecord, includeSecrets = false): string {
+  const r = prepared(record, includeSecrets); const body = bodyValue(r); const lines = ['import requests', '', 'response = requests.request(', `    ${JSON.stringify(r.request.method)},`, `    ${JSON.stringify(r.request.url)},`, `    headers=${pythonLiteral(headersObject(r.request.headers), 4)},`];
+  if (body !== undefined) lines.push(`    json=${pythonLiteral(body, 4)},`);
   lines.push(')', '', 'print(response.status_code)', 'print(response.text)'); return lines.join('\n');
+}
+function pythonLiteral(value: unknown, indent = 0): string {
+  if (value === null) return 'None';
+  if (value === true) return 'True';
+  if (value === false) return 'False';
+  if (typeof value === 'string') return JSON.stringify(value);
+  if (typeof value === 'number') return Number.isFinite(value) ? String(value) : 'None';
+  if (Array.isArray(value)) return value.length ? `[${value.map((item) => pythonLiteral(item, indent + 4)).join(', ')}]` : '[]';
+  if (typeof value === 'object' && value) return Object.keys(value).length ? `{\n${Object.entries(value).map(([key, item]) => `${' '.repeat(indent + 4)}${JSON.stringify(key)}: ${pythonLiteral(item, indent + 4)}`).join(',\n')}\n${' '.repeat(indent)}}` : '{}';
+  return 'None';
 }
 export function toPostman(record: RequestRecord, includeSecrets = false): object {
   const r = prepared(record, includeSecrets); const u = new URL(r.request.url);
