@@ -4,7 +4,7 @@ import { getPreferences, savePreferences } from '../storage/preferences';
 import { useRequestStore } from '../shared/store';
 import type { AppearanceTheme, BodyContent, ConsoleRecord, DebugInsight, DebugRecord, PerformanceRecord, Preferences, RequestRecord, UIElementRecord } from '../shared/types';
 import { toAIPrompt, toAxios, toCurl, toDebugBundle, toFetch, toFullDebug, toMarkdownBugReport, toPostman, toRawHttp } from '../core/formatters';
-import { detectSecret, redactRecord } from '../core/secrets';
+import { detectSecret, redactRecord, redactUrlValue } from '../core/secrets';
 import { BodyViewer } from './BodyViewer';
 import { DebugModes, type ProductMode } from './DebugModes';
 import { deriveInsights } from '../core/debug-insights';
@@ -91,7 +91,10 @@ export function App({ devtoolsTabId }: { devtoolsTabId?: number }) {
         getDebugRecords('ui-snapshot', tabId), getDebugRecords('event', tabId), getDebugRecords('console', tabId),
         getDebugRecords('mutation', tabId), getDebugRecords('performance', tabId),
       ]);
-      if (!cancelled) setDebugRecords(kinds.flat().sort((a, b) => b.timestamp - a.timestamp) as DebugRecord[]);
+      if (!cancelled) {
+        const next = kinds.flat().sort((a, b) => b.timestamp - a.timestamp) as DebugRecord[];
+        setDebugRecords((current) => current.length === next.length && current.every((item, index) => item.id === next[index]?.id && item.timestamp === next[index]?.timestamp) ? current : next);
+      }
     };
     void refreshDebug().catch(() => undefined);
     const timer = window.setInterval(() => void refreshDebug().catch(() => undefined), 1200);
@@ -112,7 +115,7 @@ export function App({ devtoolsTabId }: { devtoolsTabId?: number }) {
   const visibleRequests = devtoolsTabId === undefined ? shownRequests.slice(0, 20) : shownRequests;
   const insights: DebugInsight[] = useMemo(() => deriveInsights(tabRequests, debugRecords.filter((item): item is UIElementRecord => item.kind === 'ui-snapshot'), debugRecords.filter((item): item is ConsoleRecord => item.kind === 'console'), debugRecords.filter((item): item is PerformanceRecord => item.kind === 'performance')), [tabRequests, debugRecords]);
   const selected = visibleRequests.find((item) => item.id === selectedId) ?? visibleRequests.find((item) => item.flags.failed) ?? visibleRequests[0];
-  const safeSelected = selected ? redactRecord(selected) : undefined;
+  const safeSelected = useMemo(() => selected ? redactRecord(selected) : undefined, [selected]);
   async function copy(value: string, label: string) {
     try { await navigator.clipboard.writeText(value); setNotice(`${label} copied`); window.setTimeout(() => setNotice(''), 1800); }
     catch { setNotice('Clipboard unavailable. Check extension clipboard access.'); window.setTimeout(() => setNotice(''), 2800); }
@@ -212,9 +215,9 @@ export function App({ devtoolsTabId }: { devtoolsTabId?: number }) {
 }
 
 function RequestRow({ record, selected, onClick }: { record: RequestRecord; selected: boolean; onClick: () => void }) {
-  const safeRecord = redactRecord(record);
+  const safeUrl = redactUrlValue(record.request.url);
   let host = ''; try { host = new URL(record.request.url).host; } catch { /* Preserve malformed captured URLs for inspection. */ }
-  return <button className={`request-row ${selected ? 'selected' : ''} ${record.flags.failed ? 'failed' : ''}`} aria-current={selected ? 'true' : undefined} onClick={onClick}><span className="method">{record.request.method}</span><span className="request-copy"><span className="request-url" title={safeRecord.request.url}>{prettyUrl(safeRecord.request.url)}</span><span className="request-meta"><span className="request-host" title={host}>{host || 'Unknown host'}</span><span>{formatDuration(record.timing?.total)}</span></span></span><span className={statusClass(record.response.status)}>{record.response.status || 'ERR'}</span></button>;
+  return <button className={`request-row ${selected ? 'selected' : ''} ${record.flags.failed ? 'failed' : ''}`} aria-current={selected ? 'true' : undefined} onClick={onClick}><span className="method">{record.request.method}</span><span className="request-copy"><span className="request-url" title={safeUrl}>{prettyUrl(safeUrl)}</span><span className="request-meta"><span className="request-host" title={host}>{host || 'Unknown host'}</span><span>{formatDuration(record.timing?.total)}</span></span></span><span className={statusClass(record.response.status)}>{record.response.status || 'ERR'}</span></button>;
 }
 function Overview({ record }: { record: RequestRecord }) {
   return <div className="overview"><InfoSection title="Request"><InfoRow label="Method" value={record.request.method} /><InfoRow label="Full URL" value={record.request.url} /><InfoRow label="Host" value={record.request.host ?? hostOf(record.request.url)} /><InfoRow label="Protocol" value={record.meta?.httpVersion ?? 'Unknown'} /></InfoSection><InfoSection title="Response"><InfoRow label="Status" value={`${record.response.status || 'ERR'} ${record.response.statusText ?? ''}`} /><InfoRow label="Content type" value={record.response.mimeType ?? 'Unknown'} /><InfoRow label="Size" value={formatSize(record.meta?.size)} /></InfoSection><InfoSection title="Timing"><InfoRow label="Total" value={formatDuration(record.timing?.total)} /><InfoRow label="Waiting" value={formatDuration(record.timing?.wait)} /><InfoRow label="Download" value={formatDuration(record.timing?.receive)} /></InfoSection><InfoSection title="Context"><InfoRow label="Page" value={record.page.url ?? 'Unknown'} /><InfoRow label="Captured" value={new Date(record.timestamp).toLocaleTimeString()} /><InfoRow label="Source" value={record.meta?.resourceType ?? 'Network'} /></InfoSection>{record.flags.failed && <div className="diagnosis">{record.response.status === 401 ? 'Authentication failure' : record.response.status === 403 ? 'Authorization or permission failure' : record.response.status === 404 ? 'Route or resource not found' : record.response.status === 422 ? 'Validation or semantic error' : record.response.status === 429 ? 'Rate limited' : record.response.status >= 500 ? 'Server or upstream error' : 'Request failed'}. Generic status guidance; inspect the request and response for evidence.</div>}</div>;

@@ -42,9 +42,9 @@ export function redactRecord(record: RequestRecord): RequestRecord {
     return { ...body, ...(safeText ? { text: safeText } : {}), ...(safeJson !== undefined ? { json: safeJson } : {}), ...(safeFormData !== undefined ? { formData: safeFormData } : {}) } as T;
   };
   const copy: RequestRecord = structuredClone(record);
-  copy.request.url = redactUrl(copy.request.url);
-  if (copy.request.path) copy.request.path = redactUrl(copy.request.path);
-  if (copy.page.url) copy.page.url = redactUrl(copy.page.url);
+  copy.request.url = redactUrlValue(copy.request.url);
+  if (copy.request.path) copy.request.path = redactUrlValue(copy.request.path);
+  if (copy.page.url) copy.page.url = redactUrlValue(copy.page.url);
   copy.request.query = Object.fromEntries(Object.entries(copy.request.query).map(([key, value]) => [key, /(token|auth|key|session|password|secret|cookie)/i.test(key) ? '[REDACTED]' : Array.isArray(value) ? value.map((item) => redactText(item)) : redactText(value)]));
   copy.request.headers = redactHeaders(copy.request.headers);
   copy.response.headers = redactHeaders(copy.response.headers);
@@ -56,7 +56,7 @@ export function redactRecord(record: RequestRecord): RequestRecord {
   return copy;
 }
 
-function redactUrl(value: string): string {
+export function redactUrlValue(value: string): string {
   try {
     const url = new URL(value);
     for (const key of [...url.searchParams.keys()]) if (/(token|auth|key|session|password|secret|cookie)/i.test(key)) url.searchParams.set(key, '[REDACTED]');

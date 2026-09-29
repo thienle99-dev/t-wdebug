@@ -65,8 +65,9 @@ export async function pruneRequests(maxRequests: number): Promise<void> {
 export async function saveDebugRecord(record: DebugRecord, maxRecords = 500): Promise<void> {
   const value = await db(); const tx = value.transaction('debugRecords', 'readwrite');
   await tx.store.put(record);
-  const items = (await tx.store.getAll()).filter((item) => item.tabId === record.tabId).sort((a, b) => b.timestamp - a.timestamp);
-  for (const item of items.slice(maxRecords)) await tx.store.delete(item.id);
+  const limit = Math.min(maxRecords, record.kind === 'ui-snapshot' ? 50 : 500);
+  const items = (await tx.store.index('by-kind').getAll(record.kind)).sort((a, b) => b.timestamp - a.timestamp);
+  for (const item of items.slice(limit)) await tx.store.delete(item.id);
   await tx.done;
 }
 export async function getDebugRecords<T extends DebugRecord['kind']>(kind: T, tabId?: number, limit = 500): Promise<Extract<DebugRecord, { kind: T }>[]> {
