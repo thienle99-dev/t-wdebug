@@ -41,6 +41,7 @@ export function normalizePageHookCapture(payload: PageHookCapturePayload, tabId:
       statusText: payload.response.statusText ?? '', headers: responseHeaders, mimeType: responseMime, body: responseBody,
     },
     timing: { startedAt: timestamp, total: finiteNonNegative(payload.timing?.total) },
+    stack: payload.stack?.slice(0, 10).map((frame) => ({ functionName: frame.functionName?.slice(0, 300), url: frame.url?.slice(0, 2000), line: finiteNonNegative(frame.line), column: finiteNonNegative(frame.column) })),
     meta: { resourceType: payload.source === 'fetch-hook' ? 'fetch' : 'xhr', size: byteLength(payload.response.body) },
     flags: { failed: payload.response.status <= 0 || payload.response.status >= 400, hasAuth: Boolean(auth) || requestHeaders.some((header) => header.sensitive), hasSensitiveData: sensitive, pinned: false },
   };

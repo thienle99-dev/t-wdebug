@@ -39,4 +39,11 @@ if grep -R -nE 'chrome\.debugger|Network\.enable|Network\.getResponseBody' src; 
   exit 1
 fi
 
+for source in src/content/main-world.ts src/content/hook-bridge.ts; do
+  if ! grep -q 'API_LENS_HOOK.*HELLO\|API_LENS_BRIDGE.*READY' "$source"; then
+    echo "Missing page-hook bridge handshake in $source." >&2
+    exit 1
+  fi
+done
+
 echo 'Capture architecture check passed.'

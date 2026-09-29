@@ -15,9 +15,16 @@ window.addEventListener('message', (event: MessageEvent<unknown>) => {
     window.postMessage({ source: 'API_LENS_BRIDGE', type: 'READY' }, '*');
     return;
   }
-  if (message.source !== 'API_LENS' || message.type !== 'CAPTURE' || !isValidCapture(message.payload)) return;
-  try { void chrome.runtime.sendMessage({ type: 'capture:hook:record', payload: message.payload }).catch(() => undefined); }
-  catch { /* A disabled extension must not affect the inspected page. */ }
+  if (message.source !== 'API_LENS') return;
+  if (message.type === 'CAPTURE' && isValidCapture(message.payload)) {
+    try { void chrome.runtime.sendMessage({ type: 'capture:hook:record', payload: message.payload }).catch(() => undefined); }
+    catch { /* A disabled extension must not affect the inspected page. */ }
+    return;
+  }
+  if (message.type === 'DEBUG_RECORD' && isValidDebugRecord(message.payload)) {
+    try { void chrome.runtime.sendMessage({ type: 'debug:record', payload: message.payload }).catch(() => undefined); }
+    catch { /* A disabled extension must not affect the inspected page. */ }
+  }
 });
 
 chrome.runtime.onMessage.addListener((message: { type?: string; enabled?: boolean }) => {
@@ -39,4 +46,11 @@ function isValidCapture(value: unknown): value is PageHookCapturePayload {
   if (typeof value.request.body === 'string' && value.request.body.length > MAX_BODY_CHARS) return false;
   if (typeof value.response.body === 'string' && value.response.body.length > MAX_BODY_CHARS) return false;
   return true;
+}
+function isValidDebugRecord(value: unknown): value is import('../shared/types').IncomingDebugRecord {
+  if (!isObject(value) || typeof value.id !== 'string' || typeof value.timestamp !== 'number') return false;
+  try { if (JSON.stringify(value).length > 128_000) return false; } catch { return false; }
+  if (value.kind === 'console') return (value.level === 'error' || value.level === 'warning') && typeof value.message === 'string' && value.message.length <= 8000;
+  if (value.kind === 'performance') return ['resource','longtask','layout-shift','paint'].includes(String(value.entryType)) && typeof value.duration === 'number';
+  return false;
 }

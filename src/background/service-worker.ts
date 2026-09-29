@@ -1,6 +1,6 @@
 import type { CaptureRuntimeMessage, CaptureStatus, PageHookCapturePayload } from '../shared/types';
 import { normalizePageHookCapture } from '../core/capture/page-hook';
-import { saveRequest } from '../storage/indexed-db';
+import { saveDebugRecord, saveRequest } from '../storage/indexed-db';
 import { getPreferences } from '../storage/preferences';
 
 const HEARTBEATS_KEY = 'devtoolsCaptureHeartbeats';
@@ -19,6 +19,22 @@ chrome.runtime.onMessage.addListener((rawMessage: unknown, sender, sendResponse)
     void persistHookCapture(message.payload, tabId, sender.tab?.url).catch(() => undefined);
     return;
   }
+
+  if (message.type === 'debug:record') {
+    const tabId = sender.tab?.id;
+    if (tabId === undefined || sender.frameId !== 0 || !isDebugRecord(message.payload)) return;
+    void saveDebugRecord({ ...message.payload, tabId } as import('../shared/types').DebugRecord).catch(() => undefined);
+    return;
+  }
+
+  if (message.type === 'debug:ui:pick' || message.type === 'debug:ui:stop') {
+    if (!Number.isInteger(message.tabId) || message.tabId < 0) return;
+    void setUiPicker(message.tabId, message.type === 'debug:ui:pick')
+      .then(() => sendResponse({ ok: true }))
+      .catch((error: unknown) => sendResponse({ ok: false, error: safeError(error) }));
+    return true;
+  }
+  if (message.type === 'debug:ui:picker') return;
 
   if (!Number.isInteger(message.tabId) || message.tabId < 0) return;
   if (message.type === 'capture:heartbeat' && typeof message.active === 'boolean') {
@@ -100,6 +116,15 @@ async function injectPageHook(tabId: number): Promise<void> {
   await chrome.scripting.executeScript({ target: { tabId }, files: ['capture/main-world.js'], world: 'MAIN', injectImmediately: true });
 }
 
+async function setUiPicker(tabId: number, enabled: boolean): Promise<void> {
+  const tab = await chrome.tabs.get(tabId);
+  const page = parseHttpUrl(tab.url);
+  if (!page) throw new Error('UI inspection is available on HTTP and HTTPS pages only.');
+  if (!await chrome.permissions.contains({ origins: [permissionPattern(page.origin)] })) throw new Error('Grant site access from the toolbar before inspecting page elements.');
+  if (enabled) await chrome.scripting.executeScript({ target: { tabId }, files: ['capture/ui-inspector.js'], world: 'ISOLATED', injectImmediately: true });
+  await chrome.tabs.sendMessage(tabId, { type: 'debug:ui:picker', enabled }).catch(() => { throw new Error('Could not reach the page inspector. Reload the page and try again.'); });
+}
+
 async function persistHookCapture(payload: PageHookCapturePayload, tabId: number, tabUrl?: string): Promise<void> {
   const stored = await chrome.storage.session.get(HOOK_SESSIONS_KEY);
   const sessions = isHookSessions(stored[HOOK_SESSIONS_KEY]) ? stored[HOOK_SESSIONS_KEY] : {};
@@ -163,6 +188,17 @@ function isPageCapturePayload(value: unknown): value is PageHookCapturePayload {
   if (value.response.body !== undefined && (typeof value.response.body !== 'string' || value.response.body.length > 1_100_000)) return false;
   if (typeof value.response.status !== 'number' || !Number.isFinite(value.response.status)) return false;
   return true;
+}
+
+function isDebugRecord(value: unknown): value is import('../shared/types').IncomingDebugRecord {
+  if (!isObject(value) || typeof value.id !== 'string' || value.id.length > 200 || typeof value.timestamp !== 'number' || !Number.isFinite(value.timestamp)) return false;
+  try { if (JSON.stringify(value).length > 128_000) return false; } catch { return false; }
+  if (value.kind === 'ui-snapshot') return typeof value.selector === 'string' && value.selector.length < 2048 && typeof value.tagName === 'string' && isObject(value.bounds) && isObject(value.styles) && isObject(value.page) && (value.html === undefined || typeof value.html === 'string' && value.html.length <= 8000);
+  if (value.kind === 'event') return typeof value.type === 'string' && value.type.length < 80 && (value.targetSelector === undefined || typeof value.targetSelector === 'string' && value.targetSelector.length < 2048);
+  if (value.kind === 'console') return (value.level === 'error' || value.level === 'warning') && typeof value.message === 'string' && value.message.length <= 8000;
+  if (value.kind === 'mutation') return ['attribute', 'text', 'child'].includes(String(value.change)) && (value.after === undefined || typeof value.after === 'string' && value.after.length <= 4000) && (value.before === undefined || typeof value.before === 'string' && value.before.length <= 4000);
+  if (value.kind === 'performance') return ['resource', 'longtask', 'layout-shift', 'paint'].includes(String(value.entryType)) && typeof value.duration === 'number' && Number.isFinite(value.duration) && (value.name === undefined || typeof value.name === 'string' && value.name.length < 2048);
+  return false;
 }
 
 function isObject(value: unknown): value is Record<string, unknown> { return Boolean(value) && typeof value === 'object' && !Array.isArray(value); }

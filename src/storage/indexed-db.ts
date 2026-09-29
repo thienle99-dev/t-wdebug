@@ -1,10 +1,16 @@
 import { openDB } from 'idb';
 import type { DBSchema, IDBPDatabase } from 'idb';
-import type { RequestRecord } from '../shared/types';
+import type { DebugRecord, RequestRecord } from '../shared/types';
 
-interface ApiLensDB extends DBSchema { requests: { key: string; value: RequestRecord; indexes: { 'by-timestamp': number } } }
+interface ApiLensDB extends DBSchema {
+  requests: { key: string; value: RequestRecord; indexes: { 'by-timestamp': number } };
+  debugRecords: { key: string; value: DebugRecord; indexes: { 'by-timestamp': number; 'by-kind': string } };
+}
 let database: Promise<IDBPDatabase<ApiLensDB>> | undefined;
-function db() { return database ??= openDB<ApiLensDB>('api-lens', 1, { upgrade(value) { const store = value.createObjectStore('requests', { keyPath: 'id' }); store.createIndex('by-timestamp', 'timestamp'); } }); }
+function db() { return database ??= openDB<ApiLensDB>('api-lens', 2, { upgrade(value, oldVersion) {
+  if (oldVersion < 1) { const store = value.createObjectStore('requests', { keyPath: 'id' }); store.createIndex('by-timestamp', 'timestamp'); }
+  if (oldVersion < 2) { const store = value.createObjectStore('debugRecords', { keyPath: 'id' }); store.createIndex('by-timestamp', 'timestamp'); store.createIndex('by-kind', 'kind'); }
+} }); }
 export async function saveRequest(record: RequestRecord, maxRequests = 500): Promise<void> {
   const value = await db(); const tx = value.transaction('requests', 'readwrite');
   const existingRecords = await tx.store.getAll();
@@ -55,4 +61,21 @@ export async function clearRequests(): Promise<void> { await (await db()).clear(
 export async function pruneRequests(maxRequests: number): Promise<void> {
   const value = await db(); const items = (await value.getAllFromIndex('requests', 'by-timestamp')).sort((a, b) => b.timestamp - a.timestamp);
   let remaining = items.length; for (const item of items.reverse()) { if (remaining <= maxRequests) break; if (!item.flags.pinned) { await value.delete('requests', item.id); remaining--; } }
+}
+export async function saveDebugRecord(record: DebugRecord, maxRecords = 500): Promise<void> {
+  const value = await db(); const tx = value.transaction('debugRecords', 'readwrite');
+  await tx.store.put(record);
+  const items = (await tx.store.getAll()).filter((item) => item.tabId === record.tabId).sort((a, b) => b.timestamp - a.timestamp);
+  for (const item of items.slice(maxRecords)) await tx.store.delete(item.id);
+  await tx.done;
+}
+export async function getDebugRecords<T extends DebugRecord['kind']>(kind: T, tabId?: number, limit = 500): Promise<Extract<DebugRecord, { kind: T }>[]> {
+  const value = await db(); const items = await value.getAllFromIndex('debugRecords', 'by-kind', kind);
+  return items.filter((item) => tabId === undefined || item.tabId === tabId).sort((a, b) => b.timestamp - a.timestamp).slice(0, limit) as Extract<DebugRecord, { kind: T }>[];
+}
+export async function clearDebugRecords(tabId?: number): Promise<void> {
+  const value = await db(); const tx = value.transaction('debugRecords', 'readwrite');
+  if (tabId === undefined) await tx.store.clear();
+  else for (const item of (await tx.store.getAll()).filter((record) => record.tabId === tabId)) await tx.store.delete(item.id);
+  await tx.done;
 }

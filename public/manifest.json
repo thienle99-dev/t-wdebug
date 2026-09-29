@@ -1,13 +1,13 @@
 {
   "manifest_version": 3,
-  "name": "API Lens",
+  "name": "Debug Lens",
   "version": "0.1.0",
-  "description": "Capture and inspect API requests locally from Chrome.",
+  "description": "Inspect page UI, network requests, console, and performance signals locally from Chrome.",
   "minimum_chrome_version": "120",
   "icons": { "16": "icons/icon16.png", "32": "icons/icon32.png", "48": "icons/icon48.png", "128": "icons/icon128.png" },
   "permissions": ["storage", "scripting", "activeTab"],
   "optional_host_permissions": ["http://*/*", "https://*/*"],
   "background": { "service_worker": "assets/service-worker.js", "type": "module" },
-  "action": { "default_title": "API Lens", "default_popup": "popup.html", "default_icon": { "16": "icons/icon16.png", "32": "icons/icon32.png" } },
+  "action": { "default_title": "Debug Lens", "default_popup": "popup.html", "default_icon": { "16": "icons/icon16.png", "32": "icons/icon32.png" } },
   "devtools_page": "devtools.html"
 }

@@ -1,14 +1,18 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type MouseEvent, type PointerEvent, type ReactNode } from 'react';
-import { clearRequests } from '../storage/indexed-db';
+import { clearDebugRecords, clearRequests, getDebugRecords } from '../storage/indexed-db';
 import { getPreferences, savePreferences } from '../storage/preferences';
 import { useRequestStore } from '../shared/store';
-import type { AppearanceTheme, BodyContent, Preferences, RequestRecord } from '../shared/types';
+import type { AppearanceTheme, BodyContent, ConsoleRecord, DebugInsight, DebugRecord, PerformanceRecord, Preferences, RequestRecord, UIElementRecord } from '../shared/types';
 import { toAIPrompt, toAxios, toCurl, toDebugBundle, toFetch, toFullDebug, toMarkdownBugReport, toPostman, toRawHttp } from '../core/formatters';
 import { detectSecret, redactRecord } from '../core/secrets';
 import { BodyViewer } from './BodyViewer';
+import { DebugModes, type ProductMode } from './DebugModes';
+import { deriveInsights } from '../core/debug-insights';
 import '../styles.css';
 
 type DetailTab = 'overview' | 'request' | 'response' | 'headers' | 'timing' | 'auth' | 'ai';
+const devtoolsModes: Array<[ProductMode, string]> = [['network', 'Network'], ['ui', 'UI Inspector'], ['console', 'Console'], ['performance', 'Performance'], ['flows', 'Flows']];
+const popupModes: Array<[ProductMode, string]> = [['recent', 'Recent'], ['network', 'Network'], ['ui', 'UI'], ['console', 'Errors']];
 function statusClass(status: number) { return status <= 0 || status >= 500 ? 'status bad' : status >= 400 ? 'status warn' : status >= 300 ? 'status redirect' : 'status ok'; }
 function prettyUrl(url: string) { try { const parsed = new URL(url); return `${parsed.pathname}${parsed.search}`; } catch { return url; } }
 function hostOf(url: string) { try { return new URL(url).host; } catch { return 'Unknown host'; } }
@@ -25,6 +29,8 @@ function bodyForDisplay(body?: BodyContent): string | undefined {
 export function App({ devtoolsTabId }: { devtoolsTabId?: number }) {
   const { requests, selectedId, loading, refresh, select, remove, togglePin } = useRequestStore();
   const [query, setQuery] = useState(''); const [tab, setTab] = useState<DetailTab>('overview');
+  const [mode, setMode] = useState<ProductMode>(devtoolsTabId === undefined ? 'recent' : 'network');
+  const [debugRecords, setDebugRecords] = useState<DebugRecord[]>([]);
   const [capture, setCapture] = useState(false);
   const [pageHookCapture, setPageHookCapture] = useState(false);
   const [activeTabUrl, setActiveTabUrl] = useState<string>();
@@ -59,7 +65,11 @@ export function App({ devtoolsTabId }: { devtoolsTabId?: number }) {
   const [activeTabId, setActiveTabId] = useState<number | undefined>(devtoolsTabId);
   const tabId = devtoolsTabId ?? activeTabId;
   useEffect(() => {
-    if (devtoolsTabId !== undefined) { setActiveTabId(devtoolsTabId); return; }
+    if (devtoolsTabId !== undefined) {
+      setActiveTabId(devtoolsTabId);
+      chrome.devtools.inspectedWindow.eval('location.href', (value) => { if (typeof value === 'string') setActiveTabUrl(value); });
+      return;
+    }
     void chrome.tabs.query({ active: true, lastFocusedWindow: true }).then(([active]) => { setActiveTabId(active?.id); setActiveTabUrl(active?.url); }).catch(() => undefined);
   }, [devtoolsTabId]);
   useEffect(() => {
@@ -74,11 +84,25 @@ export function App({ devtoolsTabId }: { devtoolsTabId?: number }) {
     const timer = window.setInterval(updateStatus, 3000);
     return () => { cancelled = true; window.clearInterval(timer); };
   }, [tabId]);
+  useEffect(() => {
+    let cancelled = false;
+    const refreshDebug = async () => {
+      const kinds = await Promise.all([
+        getDebugRecords('ui-snapshot', tabId), getDebugRecords('event', tabId), getDebugRecords('console', tabId),
+        getDebugRecords('mutation', tabId), getDebugRecords('performance', tabId),
+      ]);
+      if (!cancelled) setDebugRecords(kinds.flat().sort((a, b) => b.timestamp - a.timestamp) as DebugRecord[]);
+    };
+    void refreshDebug().catch(() => undefined);
+    const timer = window.setInterval(() => void refreshDebug().catch(() => undefined), 1200);
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, [tabId]);
+  const tabRequests = tabId === undefined ? requests : requests.filter((item) => item.tabId === undefined || item.tabId === tabId);
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
-    return requests.filter((r) => !q || `${r.request.method} ${r.request.url} ${r.response.status} ${r.response.statusText ?? ''}`.toLowerCase().includes(q));
-  }, [requests, query]);
-  const domains = useMemo(() => [...new Set(requests.flatMap((item) => { try { return [new URL(item.request.url).host]; } catch { return []; } }))].sort(), [requests]);
+    return tabRequests.filter((r) => !q || `${r.request.method} ${r.request.url} ${r.response.status} ${r.response.statusText ?? ''}`.toLowerCase().includes(q));
+  }, [tabRequests, query]);
+  const domains = useMemo(() => [...new Set(tabRequests.flatMap((item) => { try { return [new URL(item.request.url).host]; } catch { return []; } }))].sort(), [tabRequests]);
   const shownRequests = filtered.filter((item) => {
     const status = item.response.status;
     const inStatus = statusFilter === 'all' || (statusFilter === '2xx' && status >= 200 && status < 300) || (statusFilter === '3xx' && status >= 300 && status < 400) || (statusFilter === '4xx' && status >= 400 && status < 500) || (statusFilter === '5xx' && status >= 500);
@@ -86,7 +110,9 @@ export function App({ devtoolsTabId }: { devtoolsTabId?: number }) {
     return inStatus && (!domainFilter || domainFilter === host) && (!hasAuthOnly || item.flags.hasAuth);
   });
   const visibleRequests = devtoolsTabId === undefined ? shownRequests.slice(0, 20) : shownRequests;
+  const insights: DebugInsight[] = useMemo(() => deriveInsights(tabRequests, debugRecords.filter((item): item is UIElementRecord => item.kind === 'ui-snapshot'), debugRecords.filter((item): item is ConsoleRecord => item.kind === 'console'), debugRecords.filter((item): item is PerformanceRecord => item.kind === 'performance')), [tabRequests, debugRecords]);
   const selected = visibleRequests.find((item) => item.id === selectedId) ?? visibleRequests.find((item) => item.flags.failed) ?? visibleRequests[0];
+  const safeSelected = selected ? redactRecord(selected) : undefined;
   async function copy(value: string, label: string) {
     try { await navigator.clipboard.writeText(value); setNotice(`${label} copied`); window.setTimeout(() => setNotice(''), 1800); }
     catch { setNotice('Clipboard unavailable. Check extension clipboard access.'); window.setTimeout(() => setNotice(''), 2800); }
@@ -112,6 +138,21 @@ export function App({ devtoolsTabId }: { devtoolsTabId?: number }) {
       setPageHookCapture(true); setCapture(true); setNotice('Capturing fetch and XHR on this tab');
     } catch (error) { setNotice(error instanceof Error ? error.message : 'Capture could not start.'); }
   }
+  async function startElementPicker() {
+    if (tabId === undefined || !activeTabUrl) { setNotice('The current page URL is unavailable.'); return; }
+    let page: URL;
+    try { page = new URL(activeTabUrl); } catch { setNotice('UI inspection is unavailable on this page.'); return; }
+    if (!['http:', 'https:'].includes(page.protocol)) { setNotice('UI inspection works on HTTP and HTTPS pages only.'); return; }
+    const pattern = `${page.protocol}//${page.hostname}/*`;
+    try {
+      const granted = await chrome.permissions.request({ origins: [pattern] });
+      if (!granted) { setNotice('Site access was not granted.'); return; }
+      const result = await chrome.runtime.sendMessage({ type: 'debug:ui:pick', tabId });
+      if (!result?.ok) throw new Error(result?.error ?? 'Element picker could not start.');
+      setNotice('Picker active on page · press Escape to cancel');
+    } catch (error) { setNotice(error instanceof Error ? error.message : 'Element picker could not start.'); }
+  }
+  async function stopElementTracking() { if (tabId !== undefined) await chrome.runtime.sendMessage({ type: 'debug:ui:stop', tabId }).catch(() => undefined); }
   async function saveSidebarWidth(value: number) { const next = Math.max(25, Math.min(55, value)); setSidebarWidth(next); await savePreferences({ sidebarWidth: next }); }
   function resizeSidebar(event: PointerEvent<HTMLButtonElement>) {
     const workspace = workspaceRef.current; if (!workspace) return;
@@ -134,7 +175,7 @@ export function App({ devtoolsTabId }: { devtoolsTabId?: number }) {
       window.setTimeout(() => URL.revokeObjectURL(blobUrl), 1000); setNotice('Postman collection exported'); window.setTimeout(() => setNotice(''), 1800);
     } catch { setNotice('Unable to export Postman collection.'); window.setTimeout(() => setNotice(''), 2200); }
   }
-  async function clearHistory() { if (!window.confirm('Clear all captured requests? Pinned requests will also be removed.')) return; await clearRequests(); await refresh(); }
+  async function clearHistory() { if (!window.confirm('Clear all captured requests and page debug history? Pinned requests will also be removed.')) return; await Promise.all([clearRequests(), clearDebugRecords()]); await refresh(); setDebugRecords([]); }
   function copyAction(kind: 'full' | 'curl' | 'safe-curl' | 'request' | 'response' | 'fetch' | 'axios' | 'raw' | 'bundle' | 'postman' | 'ai' | 'bug', record = selected) {
     if (!record) return;
     const withSecrets = includeSecrets;
@@ -153,23 +194,27 @@ export function App({ devtoolsTabId }: { devtoolsTabId?: number }) {
   }
   const captureLabel = pageHookCapture ? 'Capturing this tab' : capture ? 'DevTools capture' : 'Live capture unavailable';
   return <main className={devtoolsTabId === undefined ? 'app popup' : 'app panel'}>
-    <header className="topbar"><div className="brand"><span className="brand-mark" aria-hidden="true">◇</span><strong>API Lens</strong><span className="count" title={`${requests.length} captured requests`}>{requests.length}</span></div><div className="top-actions"><span className={`capture-state ${capture ? 'on' : ''}`} role="status"><i aria-hidden="true" />{captureLabel}</span><label className="theme-control"><span className="visually-hidden">Appearance</span><select aria-label="Appearance" title={`Appearance: ${appearance}`} value={appearance} onChange={(event) => void changeAppearance(event.target.value as AppearanceTheme)}><option value="system">System theme</option><option value="light">Light theme</option><option value="dark">Dark theme</option></select></label></div></header>
+    <header className="topbar"><div className="brand"><span className="brand-mark" aria-hidden="true">◇</span><strong>Debug Lens</strong><span className="count" title={`${requests.length} captured requests`}>{requests.length}</span></div><div className="top-actions"><span className={`capture-state ${capture ? 'on' : ''}`} role="status"><i aria-hidden="true" />{captureLabel}</span><label className="theme-control"><span className="visually-hidden">Appearance</span><select aria-label="Appearance" title={`Appearance: ${appearance}`} value={appearance} onChange={(event) => void changeAppearance(event.target.value as AppearanceTheme)}><option value="system">System theme</option><option value="light">Light theme</option><option value="dark">Dark theme</option></select></label></div></header>
     {devtoolsTabId === undefined && <aside className="capture-hint" role="status"><span>{pageHookCapture ? 'Page hook is capturing fetch/XHR on this tab.' : capture ? 'DevTools is capturing. Enable the page hook to capture without DevTools.' : 'Capture fetch/XHR on this tab without opening DevTools. Saved history remains available.'}</span><button className={pageHookCapture ? '' : 'primary'} onClick={() => void togglePageHook()} disabled={!activeTabUrl}>{pageHookCapture ? 'Stop site capture' : 'Capture this site'}</button></aside>}
+    <nav className="product-nav" aria-label="Debug areas" role="tablist">{(devtoolsTabId === undefined ? popupModes : devtoolsModes).map(([key, label]) => <button key={key} role="tab" aria-selected={mode === key} className={mode === key ? 'selected' : ''} onClick={() => setMode(key)}>{label}{key === 'console' && debugRecords.some((item) => item.kind === 'console' && item.level === 'error') ? <span className="nav-count">{debugRecords.filter((item) => item.kind === 'console' && item.level === 'error').length}</span> : null}</button>)}</nav>
+    {mode !== 'network' && <DebugModes mode={mode} records={debugRecords} requests={tabRequests} insights={insights} onPick={() => void startElementPicker()} onStop={() => void stopElementTracking()} onCopy={(value, label) => { if (value) void copy(value, label); else setNotice(label); }} />}
+    {mode === 'network' && <>
     <section className="toolbar"><label className="search-field"><span aria-hidden="true">⌕</span><input aria-label="Search requests" placeholder="Search URL, method, status…" value={query} onChange={(event) => setQuery(event.target.value)} />{query && <button className="clear-search" aria-label="Clear search" onClick={() => setQuery('')}>×</button>}</label><select aria-label="Filter by status" value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}><option value="all">All status</option><option value="2xx">2xx</option><option value="3xx">3xx</option><option value="4xx">4xx</option><option value="5xx">5xx</option></select><select aria-label="Filter by domain" value={domainFilter} onChange={(event) => setDomainFilter(event.target.value)}><option value="">All domains</option>{domains.map((domain) => <option key={domain} value={domain}>{domain}</option>)}</select><button className={`filter-chip ${hasAuthOnly ? 'active' : ''}`} aria-pressed={hasAuthOnly} onClick={() => setHasAuthOnly(!hasAuthOnly)}>Has auth</button><details className="menu sensitive-menu"><summary>{includeSecrets ? 'Sensitive: reveal ▾' : 'Sensitive: mask ▾'}</summary><div className="menu-popover menu-align-right" role="menu"><button role="menuitemradio" aria-checked={!includeSecrets} onClick={(event) => { closeMenu(event); void changeSecrets(false); }}>Mask secrets</button><button role="menuitemradio" aria-checked={includeSecrets} onClick={(event) => { closeMenu(event); void changeSecrets(true); }}>Reveal in copies</button></div></details><details className="menu clear-menu"><summary className="quiet">Clear ▾</summary><div className="menu-popover menu-align-right"><button className="danger-action" onClick={(event) => { closeMenu(event); void clearHistory(); }}>Clear all history</button></div></details></section>
       <section className="workspace" ref={workspaceRef} style={{ '--sidebar-width': `${sidebarWidth}%` } as CSSProperties}><aside className="request-list" aria-label="Captured requests"><div className="list-heading"><strong>Requests</strong><span>{visibleRequests.length} {visibleRequests.length === 1 ? 'request' : 'requests'}</span></div>{loading && !requests.length ? <div className="empty">Loading local history…</div> : visibleRequests.length ? visibleRequests.map((r) => <RequestRow key={r.id} record={r} selected={selected?.id === r.id} onClick={() => select(r.id)} />) : <div className="empty"><strong>No API requests captured yet.</strong><span>{pageHookCapture ? 'Use the app in this tab; fetch and XHR traffic will appear here.' : devtoolsTabId !== undefined || capture ? 'Waiting for API traffic…' : 'Choose “Capture this site” to capture fetch/XHR without opening DevTools.'}</span><small>Traffic stays in this browser unless you explicitly copy or send it.</small></div>}</aside><button className="workspace-splitter" role="separator" aria-orientation="vertical" aria-label="Resize request list" aria-valuemin={25} aria-valuemax={55} aria-valuenow={Math.round(sidebarWidth)} onPointerDown={resizeSidebar} onKeyDown={resizeWithKeyboard} />
-      <section className="details">{selected ? <><div className="selected-head"><div className="endpoint"><div className="endpoint-title"><span className="method">{selected.request.method}</span><strong title={selected.request.url}>{prettyUrl(selected.request.url)}</strong><span className={statusClass(selected.response.status)}>{selected.response.status || 'ERR'} {selected.response.statusText}</span></div><div className="endpoint-meta"><span>{selected.request.host ?? hostOf(selected.request.url)}</span><span>{formatDuration(selected.timing?.total)}</span><span>{formatSize(selected.meta?.size)}</span><span>{selected.meta?.resourceType ?? 'request'}</span><span>{selected.meta?.httpVersion}</span></div></div><div className="row-actions"><button className={`icon-button pin-action ${selected.flags.pinned ? 'pinned' : ''}`} aria-label={selected.flags.pinned ? 'Unpin request' : 'Pin request'} title={selected.flags.pinned ? 'Unpin request' : 'Pin request'} onClick={() => void togglePin(selected.id)}>{selected.flags.pinned ? '★' : '☆'}</button><details className="menu row-menu"><summary className="icon-button" aria-label="Request actions">•••</summary><div className="menu-popover menu-align-right"><button onClick={(event) => { closeMenu(event); void copy(selected.request.url, 'URL'); }}>Copy URL</button><button className="danger-action" onClick={(event) => { closeMenu(event); void remove(selected.id); }}>Delete request</button></div></details></div></div>
+      <section className="details">{selected ? <><div className="selected-head"><div className="endpoint"><div className="endpoint-title"><span className="method">{selected.request.method}</span><strong title={safeSelected?.request.url}>{prettyUrl(safeSelected?.request.url ?? selected.request.url)}</strong><span className={statusClass(selected.response.status)}>{selected.response.status || 'ERR'} {selected.response.statusText}</span></div><div className="endpoint-meta"><span>{selected.request.host ?? hostOf(selected.request.url)}</span><span>{formatDuration(selected.timing?.total)}</span><span>{formatSize(selected.meta?.size)}</span><span>{selected.meta?.resourceType ?? 'request'}</span><span>{selected.meta?.httpVersion}</span></div></div><div className="row-actions"><button className={`icon-button pin-action ${selected.flags.pinned ? 'pinned' : ''}`} aria-label={selected.flags.pinned ? 'Unpin request' : 'Pin request'} title={selected.flags.pinned ? 'Unpin request' : 'Pin request'} onClick={() => void togglePin(selected.id)}>{selected.flags.pinned ? '★' : '☆'}</button><details className="menu row-menu"><summary className="icon-button" aria-label="Request actions">•••</summary><div className="menu-popover menu-align-right"><button onClick={(event) => { closeMenu(event); void copy(selected.request.url, 'URL'); }}>Copy URL</button><button className="danger-action" onClick={(event) => { closeMenu(event); void remove(selected.id); }}>Delete request</button></div></details></div></div>
         <nav className="tabs" aria-label="Request details" role="tablist">{(['overview', 'request', 'response', 'headers', 'timing'] as DetailTab[]).map((name) => <button key={name} role="tab" aria-selected={tab === name} className={tab === name ? 'selected' : ''} onClick={() => setTab(name)}>{name}</button>)}<details className="menu more-tabs"><summary>More ▾</summary><div className="menu-popover"><button role="tab" aria-selected={tab === 'auth'} onClick={(event) => { closeMenu(event); setTab('auth'); }}>Authentication</button><button role="tab" aria-selected={tab === 'ai'} onClick={(event) => { closeMenu(event); setTab('ai'); }}>AI prompt</button></div></details></nav>
-        <div className="detail-content">{tab === 'overview' && <Overview record={selected} />}{tab === 'request' && <BodyPanel title="Request" headers={selected.request.headers} body={bodyForDisplay(selected.request.body)} mimeType={selected.request.body?.mimeType} json={selected.request.body?.json} graphQL={/graphql/i.test(selected.request.url)} unavailable={undefined} onCopy={copy} />}{tab === 'headers' && <><BodyPanel title="Request" section="headers" headers={selected.request.headers} body={undefined} onCopy={copy} /><BodyPanel title="Response" section="headers" headers={selected.response.headers} body={undefined} onCopy={copy} /></>}{tab === 'response' && <BodyPanel title="Response" section="body" headers={[]} body={selected.response.body?.text} json={selected.response.body?.json} mimeType={selected.response.mimeType} graphQL={/graphql/i.test(selected.request.url)} unavailable={selected.response.body?.unavailableReason} status={`${selected.response.status || 'ERR'} ${selected.response.statusText ?? ''}`.trim()} size={formatSize(selected.meta?.size)} onCopy={copy} />}{tab === 'timing' && <TimingPanel record={selected} />}{tab === 'auth' && <AuthPanel record={selected} onCopy={copy} />}{tab === 'ai' && <section className="ai-panel"><div className="ai-heading">Manual AI debug prompt <span>redacted by default</span></div><p>Review the included context, then copy it into your preferred AI tool. API Lens does not send data automatically.</p><pre>{toAIPrompt(selected)}</pre><button className="primary" onClick={() => copyAction('ai', selected)}>Copy AI prompt</button></section>}</div>
+        <div className="detail-content">{tab === 'overview' && safeSelected && <Overview record={safeSelected} />}{tab === 'request' && safeSelected && <BodyPanel title="Request" headers={selected.request.headers} body={bodyForDisplay(safeSelected.request.body)} mimeType={safeSelected.request.body?.mimeType} json={safeSelected.request.body?.json} graphQL={/graphql/i.test(selected.request.url)} unavailable={undefined} onCopy={copy} />}{tab === 'headers' && <><BodyPanel title="Request" section="headers" headers={selected.request.headers} body={undefined} onCopy={copy} /><BodyPanel title="Response" section="headers" headers={selected.response.headers} body={undefined} onCopy={copy} /></>}{tab === 'response' && safeSelected && <BodyPanel title="Response" section="body" headers={[]} body={safeSelected.response.body?.text} json={safeSelected.response.body?.json} mimeType={safeSelected.response.mimeType} graphQL={/graphql/i.test(selected.request.url)} unavailable={safeSelected.response.body?.unavailableReason} status={`${selected.response.status || 'ERR'} ${selected.response.statusText ?? ''}`.trim()} size={formatSize(selected.meta?.size)} onCopy={copy} />}{tab === 'timing' && <TimingPanel record={selected} />}{tab === 'auth' && <AuthPanel record={selected} onCopy={copy} />}{tab === 'ai' && <section className="ai-panel"><div className="ai-heading">Manual AI debug prompt <span>redacted by default</span></div><p>Review the included context, then copy it into your preferred AI tool. API Lens does not send data automatically.</p><pre>{toAIPrompt(selected)}</pre><button className="primary" onClick={() => copyAction('ai', selected)}>Copy AI prompt</button></section>}</div>
         <div className="action-bar"><button className="primary" onClick={() => copyAction('full')}>Copy debug</button><button className="secondary-action" onClick={() => copyAction('curl')}>Copy cURL</button><button className="ai-action" onClick={() => copyAction('ai')}>Ask AI</button><span className="action-spacer" /><details className="menu action-menu"><summary>Copy ▾</summary><div className="menu-popover menu-align-right"><button onClick={(event) => { closeMenu(event); copyAction('request'); }}>Request</button><button onClick={(event) => { closeMenu(event); copyAction('response'); }}>Response</button><button onClick={(event) => { closeMenu(event); copyAction('safe-curl'); }}>Safe cURL</button><button onClick={(event) => { closeMenu(event); copyAction('fetch'); }}>JavaScript fetch</button><button onClick={(event) => { closeMenu(event); copyAction('axios'); }}>Axios</button><button onClick={(event) => { closeMenu(event); copyAction('raw'); }}>Raw HTTP</button><button onClick={(event) => { closeMenu(event); copyAction('bundle'); }}>Safe debug bundle</button></div></details><details className="menu action-menu"><summary>Export ▾</summary><div className="menu-popover menu-align-right"><button onClick={(event) => { closeMenu(event); copyAction('postman'); }}>Postman collection</button><button onClick={(event) => { closeMenu(event); copyAction('bug'); }}>Markdown bug report</button></div></details></div>
       </> : <div className="empty detail-empty">Select a request to inspect its details.</div>}</section>
-    </section>
+    </section></>}
     <footer><span>Local history · max {prefs?.maxRequests ?? 500} requests</span><span>{notice || 'No traffic is sent automatically'}</span></footer>
   </main>;
 }
 
 function RequestRow({ record, selected, onClick }: { record: RequestRecord; selected: boolean; onClick: () => void }) {
+  const safeRecord = redactRecord(record);
   let host = ''; try { host = new URL(record.request.url).host; } catch { /* Preserve malformed captured URLs for inspection. */ }
-  return <button className={`request-row ${selected ? 'selected' : ''} ${record.flags.failed ? 'failed' : ''}`} aria-current={selected ? 'true' : undefined} onClick={onClick}><span className="method">{record.request.method}</span><span className="request-copy"><span className="request-url" title={record.request.url}>{prettyUrl(record.request.url)}</span><span className="request-meta"><span className="request-host" title={host}>{host || 'Unknown host'}</span><span>{formatDuration(record.timing?.total)}</span></span></span><span className={statusClass(record.response.status)}>{record.response.status || 'ERR'}</span></button>;
+  return <button className={`request-row ${selected ? 'selected' : ''} ${record.flags.failed ? 'failed' : ''}`} aria-current={selected ? 'true' : undefined} onClick={onClick}><span className="method">{record.request.method}</span><span className="request-copy"><span className="request-url" title={safeRecord.request.url}>{prettyUrl(safeRecord.request.url)}</span><span className="request-meta"><span className="request-host" title={host}>{host || 'Unknown host'}</span><span>{formatDuration(record.timing?.total)}</span></span></span><span className={statusClass(record.response.status)}>{record.response.status || 'ERR'}</span></button>;
 }
 function Overview({ record }: { record: RequestRecord }) {
   return <div className="overview"><InfoSection title="Request"><InfoRow label="Method" value={record.request.method} /><InfoRow label="Full URL" value={record.request.url} /><InfoRow label="Host" value={record.request.host ?? hostOf(record.request.url)} /><InfoRow label="Protocol" value={record.meta?.httpVersion ?? 'Unknown'} /></InfoSection><InfoSection title="Response"><InfoRow label="Status" value={`${record.response.status || 'ERR'} ${record.response.statusText ?? ''}`} /><InfoRow label="Content type" value={record.response.mimeType ?? 'Unknown'} /><InfoRow label="Size" value={formatSize(record.meta?.size)} /></InfoSection><InfoSection title="Timing"><InfoRow label="Total" value={formatDuration(record.timing?.total)} /><InfoRow label="Waiting" value={formatDuration(record.timing?.wait)} /><InfoRow label="Download" value={formatDuration(record.timing?.receive)} /></InfoSection><InfoSection title="Context"><InfoRow label="Page" value={record.page.url ?? 'Unknown'} /><InfoRow label="Captured" value={new Date(record.timestamp).toLocaleTimeString()} /><InfoRow label="Source" value={record.meta?.resourceType ?? 'Network'} /></InfoSection>{record.flags.failed && <div className="diagnosis">{record.response.status === 401 ? 'Authentication failure' : record.response.status === 403 ? 'Authorization or permission failure' : record.response.status === 404 ? 'Route or resource not found' : record.response.status === 422 ? 'Validation or semantic error' : record.response.status === 429 ? 'Rate limited' : record.response.status >= 500 ? 'Server or upstream error' : 'Request failed'}. Generic status guidance; inspect the request and response for evidence.</div>}</div>;

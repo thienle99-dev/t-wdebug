@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Debug Lens · Local demo</title>
+  <style>
+    :root { color-scheme: dark; font: 14px/1.5 system-ui,sans-serif; background:#0b1220; color:#e5edf8 }
+    * { box-sizing:border-box } body { margin:0; padding:32px; max-width:1080px; margin-inline:auto }
+    h1 { margin:0 0 6px } p { color:#9aabc0 } code,pre { font-family:ui-monospace,monospace }
+    .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(250px,1fr)); gap:14px; margin:24px 0 }
+    section,.card { padding:18px; border:1px solid #26364a; border-radius:10px; background:#111b2b }
+    button,input { font:inherit; color:inherit; border:1px solid #34465f; background:#18263a; padding:8px 11px; border-radius:6px; cursor:pointer }
+    button:hover { border-color:#64a4ff } .stack { display:flex; flex-wrap:wrap; gap:8px }
+    .clip { width:100%; overflow:hidden; height:64px; border:1px dashed #8090a4; padding:8px }
+    .wide { width:720px; max-width:none } .cover { position:relative; display:inline-block; margin-top:12px }
+    .overlay { position:absolute; inset:0; background:#ef444455; z-index:4; display:grid; place-items:center; pointer-events:auto }
+    .hidden { display:none } .error { color:#fca5a5 } #mutation { padding:8px; border-radius:5px }
+    pre { min-height:48px; white-space:pre-wrap; overflow-wrap:anywhere; color:#b9c8da }
+  </style>
+</head>
+<body>
+  <h1>Debug Lens local demo</h1>
+  <p>Enable “Capture this site” in the extension popup, then pick elements and try the controls below. API responses are served by the local Vite dev server; no third-party API is used.</p>
+  <div class="grid">
+    <section><h2>Network</h2><div class="stack">
+      <button data-status="200">fetch 200</button><button data-status="401">fetch 401</button>
+      <button data-status="422">fetch 422</button><button data-status="500">fetch 500</button>
+      <button id="slow">Slow request</button><button id="xhr">XHR request</button>
+    </div><pre id="result">Responses will appear here.</pre></section>
+    <section><h2>Events & mutations</h2><div class="stack"><button id="mutate">Toggle loading state</button><button id="console-error">Console error</button><button id="long-task">Long task</button></div><p id="mutation">Ready to save.</p></section>
+    <section><h2>Layout cases</h2><p>Pick each target to inspect visibility, clipping, coverage, and overflow.</p><button id="covered">Covered button</button><div class="cover"><button>Underlying action</button><div class="overlay">Overlay</div></div><p><button class="hidden">display:none target</button><span class="error">Hidden button is above.</span></p><div class="clip"><div class="wide">720px content inside a clipped 100% region</div></div></section>
+    <section><h2>Authentication marker</h2><p>Use an intentionally fake token to test masking. It is never a valid credential.</p><button id="auth">Send request with fake bearer</button><input aria-label="Email" placeholder="Try the accessibility inspector" required><button disabled>Disabled button</button></section>
+  </div>
+  <script>
+    const result = document.querySelector('#result');
+    async function send(status = 200, delay = 0, token = false) {
+      const headers = { 'Content-Type':'application/json' };
+      if (token) headers.Authorization = 'Bearer demo-only-not-a-real-token';
+      try {
+        const response = await fetch(`/__debug-lens-demo-api?status=${status}&delay=${delay}`, { method:'POST', headers, body:JSON.stringify({ item:'demo', email:'not-an-email' }) });
+        result.textContent = `${response.status} ${response.statusText}\n${JSON.stringify(await response.json(), null, 2)}`;
+      } catch (error) { result.textContent = String(error); }
+    }
+    document.querySelectorAll('[data-status]').forEach((button) => button.addEventListener('click', () => void send(Number(button.dataset.status))));
+    document.querySelector('#slow').addEventListener('click', () => void send(200, 1450));
+    document.querySelector('#auth').addEventListener('click', () => void send(401, 0, true));
+    document.querySelector('#xhr').addEventListener('click', () => {
+      const xhr = new XMLHttpRequest(); xhr.open('POST', '/__debug-lens-demo-api?status=200'); xhr.setRequestHeader('Content-Type','application/json');
+      xhr.onload = () => { result.textContent = `${xhr.status} ${xhr.responseText}`; }; xhr.send(JSON.stringify({ source:'xhr' }));
+    });
+    document.querySelector('#mutate').addEventListener('click', () => {
+      const target = document.querySelector('#mutation'); target.classList.toggle('error'); target.toggleAttribute('aria-invalid'); target.textContent = target.classList.contains('error') ? 'Validation failed: update your profile.' : 'Ready to save.';
+    });
+    document.querySelector('#console-error').addEventListener('click', () => console.error('Demo save failed; password="fake-demo-secret"'));
+    document.querySelector('#long-task').addEventListener('click', () => { const end = performance.now() + 180; while (performance.now() < end) {} });
+  </script>
+</body>
+</html>

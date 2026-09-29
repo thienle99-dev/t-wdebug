@@ -6,15 +6,16 @@ interface HookPayload {
   request: { method: string; url: string; headers: Record<string, string>; body?: string; bodyTruncated?: boolean; credentials?: string };
   response: { status: number; statusText?: string; headers: Record<string, string>; body?: string; bodyTruncated?: boolean; mimeType?: string; unavailableReason?: string };
   timing: { total: number };
+  stack?: Array<{ functionName?: string; url?: string; line?: number; column?: number }>;
 }
 interface XhrMetadata { method: string; url: string; headers: Record<string, string> }
-interface HookState { enabled: boolean }
+interface HookState { enabled: boolean; resume?: () => void }
 
 declare global { interface Window { __API_LENS_HOOK__?: HookState } }
 
 (() => {
   const prior = window.__API_LENS_HOOK__;
-  if (prior) { prior.enabled = true; return; }
+  if (prior) { prior.enabled = true; prior.resume?.(); return; }
 
   const state: HookState = { enabled: true };
   window.__API_LENS_HOOK__ = state;
@@ -29,7 +30,10 @@ declare global { interface Window { __API_LENS_HOOK__?: HookState } }
     if (event.source !== window || !isObject(event.data)) return;
     const message = event.data as { source?: string; type?: string; enabled?: boolean };
     if (message.source === 'API_LENS_BRIDGE' && message.type === 'READY') { bridgeReady = true; flush(); }
-    if (message.source === 'API_LENS_BRIDGE' && message.type === 'SET_ENABLED') state.enabled = message.enabled === true;
+    if (message.source === 'API_LENS_BRIDGE' && message.type === 'SET_ENABLED') {
+      state.enabled = message.enabled === true;
+      if (state.enabled) state.resume?.(); else stopInstrumentation();
+    }
   });
   // The bridge is injected first. Hello makes readiness deterministic even if its
   // initial READY message happened before this MAIN-world listener existed.
@@ -39,6 +43,18 @@ declare global { interface Window { __API_LENS_HOOK__?: HookState } }
     if (!state.enabled) return;
     if (bridgeReady) window.postMessage({ source: 'API_LENS', type: 'CAPTURE', payload }, '*');
     else { pending.push(payload); if (pending.length > 40) pending.shift(); }
+  }
+  function emitDebug(payload: Record<string, unknown>): void {
+    if (!state.enabled) return;
+    try { window.postMessage({ source: 'API_LENS', type: 'DEBUG_RECORD', payload }, '*'); } catch { /* Debug collection must not alter page behavior. */ }
+  }
+  function stackFrames(stack?: string): Array<{ functionName?: string; url?: string; line?: number; column?: number }> {
+    if (!stack) return [];
+    return stack.split('\n').slice(1, 11).flatMap((line) => {
+      const match = line.trim().match(/^(?:at\s+(.+?)\s+\()?((?:https?|file|webpack|chrome-extension):[^)]+):(\d+):(\d+)\)?$/);
+      if (!match || match[2]!.includes('apiLens')) return [];
+      return [{ functionName: match[1]?.replace(/^async\s+/, ''), url: match[2]!.slice(0, 2000), line: Number(match[3]), column: Number(match[4]) }];
+    });
   }
   function flush(): void { while (pending.length) window.postMessage({ source: 'API_LENS', type: 'CAPTURE', payload: pending.shift() }, '*'); }
   function pageUrl(): string { try { return location.href.slice(0, 4096); } catch { return ''; } }
@@ -76,12 +92,12 @@ declare global { interface Window { __API_LENS_HOOK__?: HookState } }
     finally { try { reader.releaseLock(); } catch { /* Reader was cancelled. */ } }
   }
   function mimeOf(headers: Headers): string { try { return headers.get('content-type') ?? ''; } catch { return ''; } }
-  const nativeFetch = window.fetch;
-  window.fetch = function apiLensFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+  let nativeFetch = window.fetch;
+  const apiLensFetch: typeof window.fetch = function apiLensFetch(this: Window, input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
     if (!state.enabled) return nativeFetch.call(this, input, init);
     let request: Request;
     try { request = new Request(input, init); } catch { return nativeFetch.call(this, input, init); }
-    const startedAt = performance.now(); const timestamp = Date.now();
+    const startedAt = performance.now(); const timestamp = Date.now(); const stack = stackFrames(new Error().stack);
     let requestInfo: Promise<{ text?: string; truncated?: boolean }> = Promise.resolve({});
     try { if (request.method !== 'GET' && request.method !== 'HEAD') requestInfo = readBody(request.clone().body); } catch { /* Body inspection must not block the application's fetch. */ }
     let responsePromise: Promise<Response>;
@@ -102,37 +118,37 @@ declare global { interface Window { __API_LENS_HOOK__?: HookState } }
           status: response.status, statusText: response.statusText, headers: headersToObject(response.headers), body: responseBody.text,
           bodyTruncated: responseBody.truncated, mimeType: responseMime,
           ...(!responseBody.text && response.status !== 204 ? { unavailableReason: 'Response body was empty or could not be read by the page hook.' } : {}),
-        }, timing: { total: performance.now() - startedAt } });
+        }, timing: { total: performance.now() - startedAt }, stack });
       })().catch(() => undefined);
       return response;
     }, (error: unknown) => {
       void requestInfo.then((requestBody) => emit({ source: 'fetch-hook', timestamp, pageUrl: pageUrl(), request: {
         method: request.method.toUpperCase(), url: request.url, headers: requestHeaders(request), body: requestBody.text,
         bodyTruncated: requestBody.truncated, credentials: request.credentials,
-      }, response: { status: 0, statusText: 'Network Error', headers: {}, unavailableReason: error instanceof Error ? error.message.slice(0, 300) : 'Fetch failed.' }, timing: { total: performance.now() - startedAt } })).catch(() => undefined);
+      }, response: { status: 0, statusText: 'Network Error', headers: {}, unavailableReason: error instanceof Error ? error.message.slice(0, 300) : 'Fetch failed.' }, timing: { total: performance.now() - startedAt }, stack })).catch(() => undefined);
       throw error;
     });
   };
 
   const xhrPrototype = XMLHttpRequest.prototype as unknown as Record<string, (...args: any[]) => any>;
-  const nativeOpen = xhrPrototype.open!;
-  const nativeSetHeader = xhrPrototype.setRequestHeader!;
-  const nativeSend = xhrPrototype.send!;
-  xhrPrototype.open = function apiLensXhrOpen(this: XMLHttpRequest, method: string, url: string | URL, ...rest: any[]): any {
+  let nativeOpen = xhrPrototype.open!;
+  let nativeSetHeader = xhrPrototype.setRequestHeader!;
+  let nativeSend = xhrPrototype.send!;
+  const apiLensXhrOpen = function apiLensXhrOpen(this: XMLHttpRequest, method: string, url: string | URL, ...rest: any[]): any {
     let resolvedUrl = String(url);
     try { resolvedUrl = new URL(resolvedUrl, location.href).href; } catch { /* Preserve native open validation behavior. */ }
     (this as XMLHttpRequest & { __apiLens?: XhrMetadata }).__apiLens = { method: String(method).toUpperCase(), url: resolvedUrl, headers: {} };
     return nativeOpen.call(this, method, url, ...rest);
   };
-  xhrPrototype.setRequestHeader = function apiLensXhrSetHeader(this: XMLHttpRequest, name: string, value: string): any {
+  const apiLensXhrSetHeader = function apiLensXhrSetHeader(this: XMLHttpRequest, name: string, value: string): any {
     const metadata = (this as XMLHttpRequest & { __apiLens?: XhrMetadata }).__apiLens;
     if (metadata && Object.keys(metadata.headers).length < 200) metadata.headers[name] = String(value).slice(0, 8192);
     return nativeSetHeader.call(this, name, value);
   };
-  xhrPrototype.send = function apiLensXhrSend(this: XMLHttpRequest, body?: Document | XMLHttpRequestBodyInit | null): any {
+  const apiLensXhrSend = function apiLensXhrSend(this: XMLHttpRequest, body?: Document | XMLHttpRequestBodyInit | null): any {
     const xhr = this; const metadata = (xhr as XMLHttpRequest & { __apiLens?: XhrMetadata }).__apiLens;
     if (!metadata || !state.enabled) return nativeSend.call(this, body);
-    const started = performance.now(); const timestamp = Date.now(); const requestBody = serializeXhrBody(body);
+    const started = performance.now(); const timestamp = Date.now(); const requestBody = serializeXhrBody(body); const stack = stackFrames(new Error().stack);
     xhr.addEventListener('loadend', () => {
       try {
         let responseText: string | undefined;
@@ -146,11 +162,37 @@ declare global { interface Window { __API_LENS_HOOK__?: HookState } }
           status: xhr.status, statusText: xhr.statusText, headers: responseHeaders, body: responseText?.slice(0, maxBodyBytes),
           bodyTruncated: (responseText?.length ?? 0) > maxBodyBytes, mimeType: responseMime,
           ...(!responseText && xhr.status !== 204 ? { unavailableReason: 'XHR response body is unavailable for this response type.' } : {}),
-        }, timing: { total: performance.now() - started } });
+        }, timing: { total: performance.now() - started }, stack });
       } catch { /* Capture must never interfere with application XHR behavior. */ }
     }, { once: true });
     return nativeSend.call(this, body);
   };
+  const nativeConsole: { error: typeof console.error; warn: typeof console.warn } = { error: console.error, warn: console.warn };
+  const consoleWrappers: { error?: typeof console.error; warn?: typeof console.warn } = {};
+  const performanceObservers: PerformanceObserver[] = [];
+  let onError: ((event: ErrorEvent) => void) | undefined;
+  let onUnhandled: ((event: PromiseRejectionEvent) => void) | undefined;
+  function installNetworkHooks() {
+    if (window.fetch !== apiLensFetch) nativeFetch = window.fetch;
+    if (xhrPrototype.open !== apiLensXhrOpen) nativeOpen = xhrPrototype.open!;
+    if (xhrPrototype.setRequestHeader !== apiLensXhrSetHeader) nativeSetHeader = xhrPrototype.setRequestHeader!;
+    if (xhrPrototype.send !== apiLensXhrSend) nativeSend = xhrPrototype.send!;
+    window.fetch = apiLensFetch; xhrPrototype.open = apiLensXhrOpen; xhrPrototype.setRequestHeader = apiLensXhrSetHeader; xhrPrototype.send = apiLensXhrSend;
+  }
+  function stopInstrumentation() {
+    if (window.fetch === apiLensFetch) window.fetch = nativeFetch;
+    if (xhrPrototype.open === apiLensXhrOpen) xhrPrototype.open = nativeOpen;
+    if (xhrPrototype.setRequestHeader === apiLensXhrSetHeader) xhrPrototype.setRequestHeader = nativeSetHeader;
+    if (xhrPrototype.send === apiLensXhrSend) xhrPrototype.send = nativeSend;
+    if (consoleWrappers.error && console.error === consoleWrappers.error) console.error = nativeConsole.error;
+    if (consoleWrappers.warn && console.warn === consoleWrappers.warn) console.warn = nativeConsole.warn;
+    consoleWrappers.error = undefined; consoleWrappers.warn = undefined;
+    if (onError) window.removeEventListener('error', onError); if (onUnhandled) window.removeEventListener('unhandledrejection', onUnhandled);
+    onError = undefined; onUnhandled = undefined;
+    for (const observer of performanceObservers) observer.disconnect(); performanceObservers.length = 0;
+  }
+  state.resume = () => { installNetworkHooks(); installConsoleCapture(); installPerformanceCapture(); };
+  state.resume();
 
   function serializeXhrBody(body: Document | XMLHttpRequestBodyInit | null | undefined): { text?: string; truncated?: boolean } {
     if (body === null || body === undefined) return {};
@@ -174,5 +216,58 @@ declare global { interface Window { __API_LENS_HOOK__?: HookState } }
     const output: Record<string, string> = {};
     for (const line of raw.split(/\r?\n/)) { const index = line.indexOf(':'); if (index > 0) output[line.slice(0, index).trim().toLowerCase()] = line.slice(index + 1).trim().slice(0, 8192); }
     return output;
+  }
+
+  function installConsoleCapture() {
+    if (onError) return;
+    for (const [method, level] of [['error', 'error'], ['warn', 'warning']] as const) {
+      nativeConsole[method] = console[method];
+      const original = nativeConsole[method];
+      const wrapper = function apiLensConsoleCapture(this: Console, ...args: unknown[]) {
+        const result = Reflect.apply(original, this, args);
+        try {
+          const message = args.map(safeConsoleValue).join(' ').slice(0, 8000);
+          emitDebug({ kind: 'console', id: crypto.randomUUID(), timestamp: Date.now(), level, message: redactConsoleSecrets(message), stack: stackFrames(new Error().stack), pageUrl: pageUrl() });
+        } catch { /* Preserve the native console method. */ }
+        return result;
+      };
+      console[method] = wrapper;
+      consoleWrappers[method] = wrapper;
+    }
+    onError = (event) => emitDebug({ kind: 'console', id: crypto.randomUUID(), timestamp: Date.now(), level: 'error', message: redactConsoleSecrets(String(event.message || 'Uncaught page error')).slice(0, 8000), stack: stackFrames(event.error instanceof Error ? event.error.stack : undefined), pageUrl: pageUrl() });
+    onUnhandled = (event) => emitDebug({ kind: 'console', id: crypto.randomUUID(), timestamp: Date.now(), level: 'error', message: redactConsoleSecrets(`Unhandled rejection: ${safeConsoleValue(event.reason)}`).slice(0, 8000), pageUrl: pageUrl() });
+    window.addEventListener('error', onError); window.addEventListener('unhandledrejection', onUnhandled);
+  }
+  function safeConsoleValue(value: unknown): string {
+    try { if (typeof value === 'string') return value; if (value instanceof Error) return `${value.name}: ${value.message}`; return JSON.stringify(value) ?? String(value); }
+    catch { return Object.prototype.toString.call(value); }
+  }
+  function redactConsoleSecrets(value: string): string {
+    return value
+      .replace(/\b(Bearer|Basic)\s+[^\s,;"']+/gi, '$1 [REDACTED]')
+      .replace(/((?:["']?)(?:access[-_]?token|refresh[-_]?token|api[-_]?key|client[-_]?secret|password|passwd|authorization|cookie|session[-_]?id|secret)["']?\s*[:=]\s*["']?)[^\s,"'};]+/gi, '$1[REDACTED]')
+      .replace(/\beyJ[a-zA-Z0-9_-]{8,}\.[a-zA-Z0-9_-]{8,}\.[a-zA-Z0-9_-]{8,}\b/g, '[REDACTED_JWT]');
+  }
+  function installPerformanceCapture() {
+    if (performanceObservers.length) return;
+    const observed = new Set<string>();
+    for (const type of ['resource','longtask','layout-shift','paint']) {
+      try {
+        if (!PerformanceObserver.supportedEntryTypes?.includes(type)) continue;
+        const observer = new PerformanceObserver((list) => {
+          for (const entry of list.getEntries().slice(-30)) {
+            if (type === 'resource' && !apiPath.test(safePath(entry.name))) continue;
+            if (type === 'longtask' && entry.duration < 50) continue;
+            if (type === 'layout-shift' && Number((entry as PerformanceEntry & { value?: number }).value ?? 0) <= 0) continue;
+            const key = `${type}:${entry.name}:${Math.round(entry.startTime)}:${Math.round(entry.duration)}`;
+            if (observed.has(key)) continue; observed.add(key); if (observed.size > 300) observed.clear();
+            const resource = entry as PerformanceResourceTiming;
+            emitDebug({ kind: 'performance', id: crypto.randomUUID(), timestamp: performance.timeOrigin + entry.startTime, entryType: type, name: redactConsoleSecrets(entry.name).slice(0, 2048), duration: Math.max(0, entry.duration), ...(type === 'layout-shift' ? { value: Number((entry as PerformanceEntry & { value?: number }).value ?? 0) } : {}), ...(type === 'resource' ? { size: resource.transferSize || undefined } : {}) });
+          }
+        });
+        performanceObservers.push(observer);
+        observer.observe({ type, buffered: true });
+      } catch { /* Browser support differs by performance entry type. */ }
+    }
   }
 })();

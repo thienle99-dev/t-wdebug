@@ -6,6 +6,7 @@ import { formatBody } from './body-format';
 import { countJsonNodes, detectBodyLanguage, formatViewerText, toJsonPath } from './body-viewer';
 import { createHarDedupeKey, normalizeHarEntry, shouldCaptureHarEntry } from './capture/devtools-network';
 import { normalizePageHookCapture } from './capture/page-hook';
+import { buildRelatedFlows, deriveInsights } from './debug-insights';
 
 describe('response body formatting', () => {
   it('pretty-prints valid JSON and preserves the raw representation', () => {
@@ -103,6 +104,36 @@ describe('secret detection and redaction', () => {
     const record = { ...demoRequests[0]!, request: { ...demoRequests[0]!.request, body: { mimeType: 'multipart/form-data', formData: { username: 'ada', password: 'private-value' } } } };
     const safe = redactRecord(record);
     expect(safe.request.body?.formData?.password).toBe('[REDACTED]');
+  });
+  it('redacts JSON response secrets and secret query parameters in safe records', () => {
+    const record = { ...demoRequests[0]!, request: { ...demoRequests[0]!.request, url: 'https://api.example.test/profile?access_token=query-secret' }, response: { ...demoRequests[0]!.response, body: { text: '{"refresh_token":"body-secret","ok":true}', json: { refresh_token: 'body-secret', ok: true } } } };
+    const safe = redactRecord(record);
+    expect(safe.request.url).not.toContain('query-secret');
+    expect(safe.response.body?.text).not.toContain('body-secret');
+  });
+});
+
+describe('frontend debug insights and related flows', () => {
+  it('flags UI diagnostics, long tasks, and nearby failed-request console errors with evidence', () => {
+    const request = { ...demoRequests[1]!, timestamp: 20_000, response: { ...demoRequests[1]!.response, status: 422 }, flags: { ...demoRequests[1]!.flags, failed: true } };
+    const element = { kind: 'ui-snapshot' as const, id: 'ui-1', tabId: 1, timestamp: 20_050, selector: '#save', simpleSelector: 'button#save', domPath: 'button#save', tagName: 'button', classList: [], attributes: {}, bounds: { x: 0, y: 0, width: 0, height: 30, top: 0, right: 0, bottom: 30, left: 0 }, styles: { computed: {}, box: { margin: '0', border: '0', padding: '0', content: '0 × 30' }, variables: {} }, ancestry: [], accessibility: { disabled: false, checks: [] }, visibility: { display: 'block', visibility: 'visible', opacity: 1, inViewport: true, clipped: true, covered: false }, diagnostics: [{ severity: 'warning' as const, title: 'Clipped by an ancestor', evidence: 'overflow: hidden' }], page: { url: 'https://app.test', viewportWidth: 390, viewportHeight: 844 } };
+    const consoleRecord = { kind: 'console' as const, id: 'console-1', tabId: 1, timestamp: 20_100, level: 'error' as const, message: 'Save failed' };
+    const performanceRecord = { kind: 'performance' as const, id: 'perf-1', tabId: 1, timestamp: 20_200, entryType: 'longtask' as const, duration: 184 };
+    const insights = deriveInsights([request], [element], [consoleRecord], [performanceRecord]);
+    expect(insights.some((item) => item.title === 'Validation response' && item.evidence.length > 0)).toBe(true);
+    expect(insights.some((item) => item.title === 'Console error near a failed request')).toBe(true);
+    expect(insights.some((item) => item.title === 'Clipped by an ancestor')).toBe(true);
+    expect(insights.some((item) => item.title === 'Main-thread long task')).toBe(true);
+  });
+  it('builds a best-effort click → request → mutation → console timeline', () => {
+    const request = { ...demoRequests[0]!, timestamp: 10_100 };
+    const event = { kind: 'event' as const, id: 'event-1', tabId: 1, timestamp: 10_000, type: 'click', targetSelector: '#save' };
+    const mutation = { kind: 'mutation' as const, id: 'mutation-1', tabId: 1, timestamp: 10_200, targetSelector: '.error', change: 'text' as const, before: '', after: 'Invalid' };
+    const consoleRecord = { kind: 'console' as const, id: 'console-1', tabId: 1, timestamp: 10_300, level: 'error' as const, message: 'Save failed' };
+    const flows = buildRelatedFlows([request], [event], [mutation], [consoleRecord]);
+    expect(flows).toHaveLength(1);
+    expect(flows[0]?.trigger?.selector).toBe('#save');
+    expect(flows[0]?.events.map((item) => item.type)).toEqual(['ui-event', 'request', 'mutation', 'console']);
   });
 });
 
