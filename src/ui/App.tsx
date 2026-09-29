@@ -4,7 +4,8 @@ import { getPreferences, savePreferences } from '../storage/preferences';
 import { useRequestStore } from '../shared/store';
 import type { Preferences, RequestRecord } from '../shared/types';
 import { toAIPrompt, toAxios, toCurl, toDebugBundle, toFetch, toFullDebug, toMarkdownBugReport, toPostman, toRawHttp } from '../core/formatters';
-import { redactRecord } from '../core/secrets';
+import { detectSecret, redactRecord } from '../core/secrets';
+import { formatBody, type BodyViewMode } from '../core/body-format';
 import '../styles.css';
 
 type DetailTab = 'overview' | 'request' | 'response' | 'auth' | 'ai';
@@ -79,7 +80,7 @@ export function App({ devtoolsTabId }: { devtoolsTabId?: number }) {
     <section className="workspace"><aside className="request-list" aria-label="Captured requests">{loading && !requests.length ? <div className="empty">Loading local history…</div> : visibleRequests.length ? visibleRequests.map((r) => <RequestRow key={r.id} record={r} selected={selected?.id === r.id} onClick={() => select(r.id)} />) : <div className="empty"><strong>No API requests captured yet.</strong><span>Start capture, then use the app in this tab.</span><small>Traffic stays in this browser unless you explicitly copy or send it.</small></div>}</aside>
       <section className="details">{selected ? <><div className="selected-head"><div className="endpoint"><span className={methodClass(selected.request.method)}>{selected.request.method}</span><strong title={selected.request.url}>{prettyUrl(selected.request.url)}</strong><span className={statusClass(selected.response.status)}>{selected.response.status || 'ERR'}</span><span className="endpoint-time">{selected.timing?.total === undefined ? '—' : `${Math.round(selected.timing.total)} ms`}</span></div><div className="row-actions"><button onClick={() => void togglePin(selected.id)} title="Pin request" aria-label={selected.flags.pinned ? 'Unpin request' : 'Pin request'}>{selected.flags.pinned ? 'Pinned' : 'Pin'}</button><button onClick={() => void remove(selected.id)} title="Delete request">Delete</button></div></div>
         <nav className="tabs" aria-label="Request details">{(['overview', 'request', 'response', 'auth', 'ai'] as DetailTab[]).map((name) => <button key={name} role="tab" aria-selected={tab === name} className={tab === name ? 'selected' : ''} onClick={() => setTab(name)}>{name}</button>)}</nav>
-        <div className="detail-content">{tab === 'overview' && <Overview record={selected} />}{tab === 'request' && <BodyPanel title="Request" headers={selected.request.headers} body={selected.request.body?.text} unavailable={undefined} />}{tab === 'response' && <BodyPanel title="Response" headers={selected.response.headers} body={selected.response.body?.text} unavailable={selected.response.body?.unavailableReason} />}{tab === 'auth' && <AuthPanel record={selected} />}{tab === 'ai' && <section className="ai-panel"><div className="ai-heading">Manual AI debug prompt <span>redacted by default</span></div><p>Review the included context, then copy it into your preferred AI tool. API Lens does not send data automatically.</p><pre>{toAIPrompt(selected)}</pre><button className="primary" onClick={() => copyAction('ai', selected)}>Copy AI prompt</button></section>}</div>
+        <div className="detail-content">{tab === 'overview' && <Overview record={selected} />}{tab === 'request' && <BodyPanel title="Request" headers={selected.request.headers} body={selected.request.body?.text} unavailable={undefined} onCopy={copy} />}{tab === 'response' && <BodyPanel title="Response" headers={selected.response.headers} body={selected.response.body?.text} unavailable={selected.response.body?.unavailableReason} onCopy={copy} />}{tab === 'auth' && <AuthPanel record={selected} onCopy={copy} />}{tab === 'ai' && <section className="ai-panel"><div className="ai-heading">Manual AI debug prompt <span>redacted by default</span></div><p>Review the included context, then copy it into your preferred AI tool. API Lens does not send data automatically.</p><pre>{toAIPrompt(selected)}</pre><button className="primary" onClick={() => copyAction('ai', selected)}>Copy AI prompt</button></section>}</div>
         <div className="action-bar"><button className="primary" onClick={() => copyAction('full')}>Copy Full Debug</button><button onClick={() => copyAction('curl')}>cURL</button><button onClick={() => copyAction('safe-curl')}>Safe cURL</button><button onClick={() => copyAction('request')}>Req</button><button onClick={() => copyAction('response')}>Res</button><div className="more-actions"><button onClick={() => copyAction('fetch')}>fetch</button><button onClick={() => copyAction('axios')}>Axios</button><button onClick={() => copyAction('raw')}>Raw HTTP</button><button onClick={() => copyAction('bundle')}>Safe bundle</button><button onClick={() => copyAction('postman')}>Postman</button><button onClick={() => copyAction('bug')}>Bug report</button><button className="ai-button" onClick={() => copyAction('ai')}>Ask AI</button></div></div>
       </> : <div className="empty detail-empty">Select a request to inspect its details.</div>}</section>
     </section>
@@ -94,10 +95,43 @@ function RequestRow({ record, selected, onClick }: { record: RequestRecord; sele
 function Overview({ record }: { record: RequestRecord }) {
   return <div className="overview"><dl><dt>Full URL</dt><dd>{record.request.url}</dd><dt>Page</dt><dd>{record.page.url ?? 'Unknown'}</dd><dt>Captured</dt><dd>{new Date(record.timestamp).toLocaleString()}</dd><dt>Duration</dt><dd>{record.timing?.total === undefined ? 'Unavailable' : `${Math.round(record.timing.total)} ms`}</dd><dt>Type</dt><dd>{record.meta?.resourceType ?? 'Unknown'}</dd><dt>Body size</dt><dd>{record.meta?.size === undefined ? 'Unknown' : `${record.meta.size.toLocaleString()} bytes`}</dd></dl>{record.flags.failed && <div className="diagnosis">{record.response.status === 401 ? 'Authentication failure' : record.response.status === 403 ? 'Authorization or permission failure' : record.response.status === 404 ? 'Route or resource not found' : record.response.status === 422 ? 'Validation or semantic error' : record.response.status === 429 ? 'Rate limited' : record.response.status >= 500 ? 'Server or upstream error' : 'Request failed'}. Generic status guidance; inspect the request and response for evidence.</div>}</div>;
 }
-function BodyPanel({ title, headers, body, unavailable }: { title: string; headers: RequestRecord['request']['headers']; body?: string; unavailable?: string }) {
-  return <div className="body-panel"><h3>{title} headers <span>{headers.length}</span></h3><pre>{headers.length ? headers.map((h) => `${h.name}: ${h.value}`).join('\n') : '(none)'}</pre><h3>{title} body</h3><pre>{body ?? unavailable ?? '(empty)'}</pre>{unavailable && <small className="hint">Body unavailable: {unavailable}</small>}</div>;
+function BodyPanel({ title, headers, body, unavailable, onCopy }: { title: string; headers: RequestRecord['request']['headers']; body?: string; unavailable?: string; onCopy: (value: string, label: string) => Promise<void> }) {
+  const [mode, setMode] = useState<BodyViewMode>('pretty');
+  const shownBody = formatBody(body, mode);
+  return <div className="body-panel">
+    <div className="section-heading"><h3>{title} headers <span>{headers.length}</span></h3><button className="copy-small" onClick={() => void onCopy(headers.map((h) => `${h.name}: ${h.value}`).join('\n'), `${title} headers`)} disabled={!headers.length}>Copy headers</button></div>
+    <HeaderList headers={headers} onCopy={onCopy} emptyLabel="No headers captured." />
+    <div className="section-heading body-heading"><h3>{title} body</h3><div className="body-tools"><div className="view-switch" role="group" aria-label={`${title} body format`}><button className={mode === 'pretty' ? 'active' : ''} aria-pressed={mode === 'pretty'} onClick={() => setMode('pretty')}>Pretty</button><button className={mode === 'raw' ? 'active' : ''} aria-pressed={mode === 'raw'} onClick={() => setMode('raw')}>Raw</button></div><button className="copy-small" onClick={() => void onCopy(body ?? '', `${title} body`)} disabled={body === undefined}>Copy body</button></div></div>
+    <pre className="body-value">{body === undefined ? unavailable ?? '(empty)' : shownBody || '(empty)'}</pre>
+    {unavailable && <small className="hint">Body unavailable: {unavailable}</small>}
+    {body?.trim().startsWith('{') || body?.trim().startsWith('[') ? <small className="hint">Pretty view formats valid JSON; Raw preserves the captured text.</small> : null}
+  </div>;
 }
-function AuthPanel({ record }: { record: RequestRecord }) {
-  const authHeaders = record.request.headers.filter((h) => h.sensitive);
-  return <div className="auth-panel"><h3>Detected authentication</h3>{record.request.auth ? <p>{record.request.auth.type} · {record.request.auth.source}</p> : <p>No authorization header detected.</p>}<pre>{authHeaders.length ? authHeaders.map((h) => `${h.name}: ${h.value}`).join('\n') : '(none)'}</pre><p className="muted">Sensitive values stay local. Enable the secrets toggle only when you intentionally need them in a local copy.</p></div>;
+function HeaderList({ headers, onCopy, sensitiveOnly = false, emptyLabel = 'No matching headers captured.' }: { headers: RequestRecord['request']['headers']; onCopy: (value: string, label: string) => Promise<void>; sensitiveOnly?: boolean; emptyLabel?: string }) {
+  const [revealed, setRevealed] = useState<Record<number, boolean>>({});
+  const visible = headers.map((header, index) => ({ header, index, secret: Boolean(header.sensitive || detectSecret(header.name, header.value)) })).filter((item) => !sensitiveOnly || item.secret);
+  if (!visible.length) return <div className="headers-empty">{emptyLabel}</div>;
+  return <div className="header-list">{visible.map(({ header, index, secret }) => <div className={`header-row ${secret ? 'sensitive' : ''}`} key={`${header.name}-${index}`}>
+    <span className="header-name" title={header.name}>{header.name}</span>
+    <code className="header-value" title={secret && !revealed[index] ? 'Sensitive value hidden' : header.value}>{secret && !revealed[index] ? '••••••••••••' : header.value}</code>
+    {secret && <button className="copy-small" aria-label={`${revealed[index] ? 'Hide' : 'Reveal'} ${header.name}`} aria-pressed={Boolean(revealed[index])} onClick={() => setRevealed((current) => ({ ...current, [index]: !current[index] }))}>{revealed[index] ? 'Hide' : 'Reveal'}</button>}
+    <button className="copy-small" aria-label={`Copy ${header.name}`} onClick={() => void onCopy(header.value, header.name)}>Copy</button>
+  </div>)}</div>;
+}
+function AuthPanel({ record, onCopy }: { record: RequestRecord; onCopy: (value: string, label: string) => Promise<void> }) {
+  const authHeaders = record.request.headers.filter((h) => h.sensitive || detectSecret(h.name, h.value));
+  const responseAuthHeaders = record.response.headers.filter((h) => h.sensitive || detectSecret(h.name, h.value));
+  return <div className="auth-panel">
+    <h3>Detected authentication</h3>
+    {record.request.auth ? <p>{record.request.auth.type} · {record.request.auth.source}</p> : <p>No authorization header detected.</p>}
+    <section className="auth-header-group" aria-label="Request headers">
+      <div className="section-heading"><h3>Request headers <span>{authHeaders.length}</span></h3><button className="copy-small" disabled={!authHeaders.length} onClick={() => void onCopy(authHeaders.map((h) => `${h.name}: ${h.value}`).join('\n'), 'Request headers')}>Copy headers</button></div>
+      <HeaderList headers={authHeaders} sensitiveOnly onCopy={onCopy} emptyLabel="No sensitive request headers detected." />
+    </section>
+    <section className="auth-header-group" aria-label="Response headers">
+      <div className="section-heading"><h3>Response headers <span>{responseAuthHeaders.length}</span></h3><button className="copy-small" disabled={!responseAuthHeaders.length} onClick={() => void onCopy(responseAuthHeaders.map((h) => `${h.name}: ${h.value}`).join('\n'), 'Response headers')}>Copy headers</button></div>
+      <HeaderList headers={responseAuthHeaders} sensitiveOnly onCopy={onCopy} emptyLabel="No sensitive response headers detected." />
+    </section>
+    <p className="muted">Sensitive values are hidden on screen. Copy explicitly to place the original value on your clipboard.</p>
+  </div>;
 }

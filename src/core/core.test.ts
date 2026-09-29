@@ -3,6 +3,20 @@ import { demoRequests } from './fixtures';
 import { toAIPrompt, toCurl, toFetch, toAxios, toPythonRequests, toPostman, toRawHttp } from './formatters';
 import { detectSecret, redactRecord } from './secrets';
 import { normalizeRecord } from './normalize';
+import { formatBody } from './body-format';
+
+describe('response body formatting', () => {
+  it('pretty-prints valid JSON and preserves the raw representation', () => {
+    const compact = '{"ok":true,"items":[1,2]}';
+    expect(formatBody(compact, 'pretty')).toBe(JSON.stringify({ ok: true, items: [1, 2] }, null, 2));
+    expect(formatBody(compact, 'raw')).toBe(compact);
+  });
+  it('leaves malformed JSON and plain text unchanged', () => {
+    expect(formatBody('{"unfinished":', 'pretty')).toBe('{"unfinished":');
+    expect(formatBody('not JSON\nplain text', 'pretty')).toBe('not JSON\nplain text');
+    expect(formatBody(undefined, 'pretty')).toBe('');
+  });
+});
 
 describe('secret detection and redaction', () => {
   it('detects authorization, API keys, JWTs, and passwords', () => {
