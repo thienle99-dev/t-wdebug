@@ -71,6 +71,9 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   if (changeInfo.status !== 'loading' && changeInfo.status !== 'complete') return;
   void refreshHookForNavigation(tabId, tab.url);
 });
+chrome.runtime.onStartup.addListener(() => { void restorePageHooks(); });
+chrome.runtime.onInstalled.addListener(() => { void restorePageHooks(); });
+chrome.permissions.onRemoved.addListener((removed) => { void clearHooksWithoutPermission(removed.origins ?? []); });
 
 async function startPageHook(tabId: number, requestedOrigin: string): Promise<void> {
   const tab = await chrome.tabs.get(tabId);
@@ -94,7 +97,7 @@ async function stopPageHook(tabId: number, requestedOrigin: string): Promise<voi
   const originUrl = parseHttpUrl(requestedOrigin);
   if (!originUrl) throw new Error('Invalid site origin.');
   const origin = originUrl.origin;
-  const stored = await chrome.storage.session.get(HOOK_SESSIONS_KEY);
+  const stored = await chrome.storage.local.get(HOOK_SESSIONS_KEY);
   const sessions = isHookSessions(stored[HOOK_SESSIONS_KEY]) ? stored[HOOK_SESSIONS_KEY] : {};
   if (sessions[String(tabId)] !== origin) return;
   await chrome.tabs.sendMessage(tabId, { type: 'capture:hook:set-enabled', enabled: false }).catch(() => undefined);
@@ -102,12 +105,49 @@ async function stopPageHook(tabId: number, requestedOrigin: string): Promise<voi
 }
 
 async function refreshHookForNavigation(tabId: number, url?: string): Promise<void> {
-  const stored = await chrome.storage.session.get(HOOK_SESSIONS_KEY);
+  const stored = await chrome.storage.local.get(HOOK_SESSIONS_KEY);
   const sessions = isHookSessions(stored[HOOK_SESSIONS_KEY]) ? stored[HOOK_SESSIONS_KEY] : {};
   const origin = sessions[String(tabId)];
   if (!origin) return;
-  if (parseHttpUrl(url)?.origin !== origin) { await updateHookTab(tabId, undefined); return; }
+  const page = parseHttpUrl(url);
+  if (!page) return;
+  if (page.origin !== origin) { await updateHookTab(tabId, undefined); return; }
+  if (!await chrome.permissions.contains({ origins: [permissionPattern(origin)] })) { await updateHookTab(tabId, undefined); return; }
   try { await injectPageHook(tabId); } catch { /* Protected pages or browser restrictions can prevent reinjection. */ }
+}
+
+async function restorePageHooks(): Promise<void> {
+  const stored = await chrome.storage.local.get(HOOK_SESSIONS_KEY);
+  let sessions = isHookSessions(stored[HOOK_SESSIONS_KEY]) ? { ...stored[HOOK_SESSIONS_KEY] } : {};
+  // Migrate an active same-version browser session from the previous ephemeral key.
+  if (!Object.keys(sessions).length) {
+    const previous = await chrome.storage.session.get(HOOK_SESSIONS_KEY);
+    if (isHookSessions(previous[HOOK_SESSIONS_KEY])) sessions = { ...previous[HOOK_SESSIONS_KEY] };
+  }
+  const tabs = await chrome.tabs.query({});
+  const openTabs = new Map(tabs.flatMap((tab) => tab.id === undefined ? [] : [[String(tab.id), tab] as const]));
+  for (const [tabId, origin] of Object.entries(sessions)) {
+    const tab = openTabs.get(tabId);
+    if (!tab || parseHttpUrl(tab.url)?.origin !== origin || !await chrome.permissions.contains({ origins: [permissionPattern(origin)] })) {
+      delete sessions[tabId];
+      continue;
+    }
+    try { await injectPageHook(tab.id!); } catch { /* The next same-origin navigation can retry. */ }
+  }
+  await chrome.storage.local.set({ [HOOK_SESSIONS_KEY]: sessions });
+  await chrome.storage.session.remove(HOOK_SESSIONS_KEY);
+}
+
+async function clearHooksWithoutPermission(removedOrigins: string[]): Promise<void> {
+  const stored = await chrome.storage.local.get(HOOK_SESSIONS_KEY);
+  const sessions = isHookSessions(stored[HOOK_SESSIONS_KEY]) ? { ...stored[HOOK_SESSIONS_KEY] } : {};
+  for (const [tabId, origin] of Object.entries(sessions)) {
+    const pattern = permissionPattern(origin);
+    if (!removedOrigins.includes(pattern) && await chrome.permissions.contains({ origins: [pattern] })) continue;
+    await chrome.tabs.sendMessage(Number(tabId), { type: 'capture:hook:set-enabled', enabled: false }).catch(() => undefined);
+    delete sessions[tabId];
+  }
+  await chrome.storage.local.set({ [HOOK_SESSIONS_KEY]: sessions });
 }
 
 async function injectPageHook(tabId: number): Promise<void> {
@@ -126,7 +166,7 @@ async function setUiPicker(tabId: number, enabled: boolean): Promise<void> {
 }
 
 async function persistHookCapture(payload: PageHookCapturePayload, tabId: number, tabUrl?: string): Promise<void> {
-  const stored = await chrome.storage.session.get(HOOK_SESSIONS_KEY);
+  const stored = await chrome.storage.local.get(HOOK_SESSIONS_KEY);
   const sessions = isHookSessions(stored[HOOK_SESSIONS_KEY]) ? stored[HOOK_SESSIONS_KEY] : {};
   const origin = sessions[String(tabId)];
   const page = parseHttpUrl(tabUrl);
@@ -147,8 +187,9 @@ async function updateHeartbeat(tabId: number, active: boolean): Promise<void> {
 }
 
 async function readCaptureStatus(tabId: number): Promise<{ state: CaptureStatus; active: boolean; pageHookActive: boolean; devtoolsActive: boolean }> {
-  const stored = await chrome.storage.session.get([HEARTBEATS_KEY, HOOK_SESSIONS_KEY]);
-  const heartbeats = isHeartbeats(stored[HEARTBEATS_KEY]) ? stored[HEARTBEATS_KEY] : {};
+  const stored = await chrome.storage.local.get(HOOK_SESSIONS_KEY);
+  const heartbeatState = await chrome.storage.session.get(HEARTBEATS_KEY);
+  const heartbeats = isHeartbeats(heartbeatState[HEARTBEATS_KEY]) ? heartbeatState[HEARTBEATS_KEY] : {};
   const heartbeat = heartbeats[String(tabId)];
   const devtoolsActive = typeof heartbeat === 'number' && Date.now() - heartbeat <= HEARTBEAT_TTL_MS;
   if (typeof heartbeat === 'number' && !devtoolsActive) await updateHeartbeat(tabId, false);
@@ -156,17 +197,21 @@ async function readCaptureStatus(tabId: number): Promise<{ state: CaptureStatus;
   const origin = sessions[String(tabId)];
   if (!origin) return { state: devtoolsActive ? 'active' : 'inactive', active: devtoolsActive, pageHookActive: false, devtoolsActive };
   const tab = await chrome.tabs.get(tabId).catch(() => undefined);
-  const pageHookActive = parseHttpUrl(tab?.url)?.origin === origin;
+  let pageHookActive = parseHttpUrl(tab?.url)?.origin === origin;
+  if (pageHookActive && !await chrome.permissions.contains({ origins: [permissionPattern(origin)] })) {
+    await updateHookTab(tabId, undefined);
+    pageHookActive = false;
+  }
   const active = devtoolsActive || pageHookActive;
   return { state: active ? 'active' : 'inactive', active, pageHookActive, devtoolsActive };
 }
 
 async function updateHookTab(tabId: number, origin: string | undefined): Promise<void> {
-  const stored = await chrome.storage.session.get(HOOK_SESSIONS_KEY);
+  const stored = await chrome.storage.local.get(HOOK_SESSIONS_KEY);
   const sessions = isHookSessions(stored[HOOK_SESSIONS_KEY]) ? { ...stored[HOOK_SESSIONS_KEY] } : {};
   if (origin) sessions[String(tabId)] = origin;
   else delete sessions[String(tabId)];
-  await chrome.storage.session.set({ [HOOK_SESSIONS_KEY]: sessions });
+  await chrome.storage.local.set({ [HOOK_SESSIONS_KEY]: sessions });
 }
 
 function permissionPattern(origin: string): string {

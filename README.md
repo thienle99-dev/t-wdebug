@@ -85,6 +85,7 @@ There is no `debugger` permission and standard operation never calls `chrome.deb
 ## Capture limits and browser boundaries
 
 - Page hooks are opt-in and begin after permission/injection; earlier requests cannot be recovered by that source. Same-origin navigation reinjection is best effort and early navigation calls may be missed.
+- Chrome retains granted optional site access across page refreshes. An explicitly started page-capture session is kept per tab and reattached after same-origin reloads; stopping capture, navigating to another origin, closing the tab, or revoking site access ends that session.
 - Hooks see JavaScript-visible fetch/XHR headers, not every header sent on the wire. Browser-managed Cookie, Origin, Referer, and `Sec-*` headers may be unavailable. DevTools can enrich network metadata while open.
 - Requests made internally by a site's service worker and inaccessible/protected Chrome pages are not reliably visible. Cross-origin iframe capture is not enabled by default; closed shadow roots cannot be inspected.
 - Streaming/SSE and binary response bodies are omitted. Bodies are limited to 1 MB. Response types such as XHR blob/arraybuffer may not expose readable text.
